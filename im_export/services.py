@@ -23,8 +23,11 @@ from django.db.models import Q
 from datetime import datetime as py_datetime
 from core.datetimes.shared import datetimedelta
 from contribution_plan.models import ContributionPlan
-from django.db import transaction
-from product.models import Product
+from django.db import transaction 
+from django.utils import timezone
+from datetime import timedelta
+from core.utils import TimeUtils 
+from product.models import Product 
 
 logger = logging.getLogger(__name__)
 
@@ -310,7 +313,7 @@ class FamilyImportExportService:
                                 marital = False
                             head_insuree_data = {
                                 "last_name": r.get("Nom&prénom_membresménag") if r.get("Nom&prénom_membresménag")\
-                                    is not None else " ",
+                                    not in [None, ""] else " ",
                                 "other_names": " ",
                                 "gender_id": current_gender,
                                 "dob": str(yob) + "-" + str(mob) + "-" + str(dob),
@@ -651,6 +654,7 @@ class BankImportService:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True) 
             return Invoice.objects.filter(
                 subject_id=str(insuree.id),
+                status=Invoice.Status.VALIDATED,
                 is_deleted=False
             ).exclude(
                 code__endswith='-G'
@@ -669,6 +673,12 @@ class BankImportService:
 
         if invoice.status in [Invoice.Status.PAID, Invoice.Status.CANCELLED]:
             raise Exception(f"Facture déjà payée ou annulée: {invoice.code}")
+        
+        amount_received = Decimal(tx["amount_received"])
+        if amount_received != invoice.amount_total:
+            raise Exception(
+                f"Montant du paiement ({amount_received} KMF) différent du montant de la facture ({invoice.amount_total} KMF)"
+            )
 
         payment_date = tx.get("date")
         if not payment_date:
@@ -682,9 +692,7 @@ class BankImportService:
         except ValueError:
             raise Exception(f"Format de date non reconnu: {payment_date}")
 
-        subject_type = ContentType.objects.get_for_model(invoice)
-
-        amount_received = Decimal(tx["amount_received"])
+        subject_type = ContentType.objects.get_for_model(invoice) 
         code_ext = tx.get("code_ext") or f"pay_{uuid4()}"
         code_tp = tx.get("code_tp") or "Banque"
         code_receipt = tx.get("code_receipt") or f"receipt_{uuid4()}"
@@ -723,6 +731,7 @@ class BankImportService:
 
         if invoice.status != Invoice.Status.RECONCILIATED:
             invoice.status = Invoice.Status.RECONCILIATED
+            invoice.date_payed = payment_invoice.date_payment
             invoice.save(username=self._user.username)
         self.log_invoice_event(
             user=self._user,
@@ -746,8 +755,47 @@ class BankImportService:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
             policy = Policy.objects.filter(
-                family=family, validity_to__isnull=True, status=Policy.STATUS_IDLE,
+                family=family, validity_to__isnull=True, 
+                status__in=[Policy.STATUS_IDLE, Policy.STATUS_EXPIRED],
             ).order_by("start_date").first()
+            
+            # Vérifier si la police est expirée et si la période d'attente est dépassée
+            waiting_period = timedelta(days=60)
+            is_expired_and_late = (
+                policy.status == Policy.STATUS_EXPIRED and
+                policy.expiry_date and
+                policy.expiry_date + waiting_period < data.date_payment
+            )
+
+            if is_expired_and_late:
+                logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée")
+                
+                new_policy = Policy(
+                    family=family,
+                    product=policy.product,
+                    status=Policy.STATUS_IDLE,
+                    stage=Policy.STAGE_RENEWED,
+                    start_date=data.date_payment,
+                    enroll_date=policy.enroll_date,
+                    expiry_date=data.date_payment + timedelta(days=30),
+                    value=policy.value, 
+                    signature_date=policy.signature_date,
+                    officer=policy.officer,
+                    periodicity=policy.periodicity,
+                    payment_day=policy.payment_day,
+                    contribution_plan=policy.contribution_plan,
+                    audit_user_id=self._user.id,
+                    validity_from=TimeUtils.now()
+                )
+                new_policy.save()
+                logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={data.date_payment}")
+
+                policy.stage = Policy.STAGE_RENEWED
+                policy.validity_to = timezone.now()
+                policy.save()
+                logger.info(f"Ancienne police {policy.id} marquée comme renouvelée et desactivée")
+
+                policy = new_policy
 
             if policy:
                 payer = Payer.objects.filter(type='C').first()
