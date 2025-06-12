@@ -26,8 +26,10 @@ from contribution_plan.models import ContributionPlan
 from django.db import transaction 
 from django.utils import timezone
 from datetime import timedelta
-from core.utils import TimeUtils 
-from product.models import Product 
+from core.utils import TimeUtils
+from product.models import Product
+import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +234,26 @@ class FamilyImportExportService:
             18: "Ouvrier",
             19: "Retraité"
         }
+        directory = "./FamilyImports"
+        file_path = False
+
+        target_dir = Path(directory)
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Get original filename and extension
+        original_name, ext = os.path.splitext(import_file.name)
+        
+        # Add current date to filename
+        current_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        new_filename = f"{original_name}_{current_date}{ext}"
+        
+        # Create full file path
+        file_path = os.path.join(target_dir, new_filename)
+        
+        # Save the file
+        with open(file_path, 'wb+') as destination:
+            for chunk in import_file.chunks():
+                destination.write(chunk)
         grouped = defaultdict(list)
         today = py_datetime.today()
         for row in data_set.dict:
