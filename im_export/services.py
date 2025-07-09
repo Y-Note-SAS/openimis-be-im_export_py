@@ -30,6 +30,7 @@ from core.utils import TimeUtils
 from product.models import Product
 import os
 from pathlib import Path
+import copy
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +331,14 @@ class FamilyImportExportService:
                                     card_issued = False
                             marital = r.get("Etatmatrimonial")
                             if marital is not None and marital != "":
-                                marital = int(marital)
+                                my_dict = {
+                                    "1": "M",
+                                    "3": "D",
+                                    "4": "W",
+                                    "5": "S",
+                                    "2": "P"
+                                }
+                                marital = my_dict.get(str(marital))
                             else:
                                 marital = False
                             head_insuree_data = {
@@ -363,18 +371,19 @@ class FamilyImportExportService:
                             jsonext.update({
                                 "data": {
                                     "head_insuree": head_insuree_data,
-                                    "family_level": "2" if marital == 2 else "1",
+                                    "family_level": "2" if marital == "P" else "1",
                                     "location_id": current_village_id,
-                                    "family_type_id": "P" if marital == 2 else "H",
+                                    "family_type_id": "P" if marital == "P" else "H",
                                 }
                             })
                             family_data = {
                                 "head_insuree": head_insuree_data,
-                                "family_level": "2" if marital == 2 else "1",
+                                "family_level": "2" if marital == "P" else "1",
                                 "location_id": current_village_id,
-                                "family_type_id": "P" if marital == 2 else "H",
+                                "family_type_id": "P" if marital == "P" else "H",
                                 "json_ext": str(jsonext)
                             }
+                            head_insuree_data["json_ext"] = str(copy.copy(head_insuree_data))
                             logger.info(f"family_data {family_data}" )
                             if not parent_family:
                                 # Pas de famille donc on cree direct vu que les membre menages sont en ordre
@@ -457,7 +466,7 @@ class FamilyImportExportService:
                                         }
                                         if expiry_date:
                                             policy_data["expiry_date"] = expiry_date
-                                if marital != 2:
+                                if marital != "P":
                                     # On cree la police pour la famille si c'est pas poligame
                                     # si c'est poligame c'est la sous famille qui aura la police
                                     if current_contribution and contribution_plan_code:
@@ -466,7 +475,7 @@ class FamilyImportExportService:
                                         # policy_created = PolicyService(self._user).update_or_create(policy_data, self._user)
                                         # logger.info("policy_created %s", policy_created.id)
                                         policies.append(policy_data)
-                                if marital == 2:
+                                if marital == "P":
                                     #polygamous with should create 1 subfamily
                                     jsonextsub = {}
                                     jsonextsub.update({
@@ -504,6 +513,7 @@ class FamilyImportExportService:
                                 else:
                                     fid = parent_family.id
                                 head_insuree_data["family_id"] = fid
+                                head_insuree_data["json_ext"] = str(copy.copy(head_insuree_data))
                                 logger.info("creation assure simple pour la famille %s", fid)
                                 insuree = InsureeService(self._user).create_or_update(head_insuree_data)
                                 logger.info("Assuree cree %s", insuree)
