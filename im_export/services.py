@@ -553,16 +553,16 @@ class FamilyImportExportService:
                                 head_insuree_data["family_id"] = fid
                                 head_insuree_data["json_ext"] = str(copy.copy(head_insuree_data))
                                 logger.info("creation assure simple pour la famille %s", fid)
-                                insuree = InsureeService(self._user).create_or_update(head_insuree_data)
-                                logger.info("Assuree cree %s", insuree)
-                                if sub_family and number_count == 2:
-                                    sub_family.head_insuree_id = insuree.id
-                                    insuree.head = True
-                                    insuree.save()
-                                    sub_family.save()
-                        logger.info("creation groupe d'itentification ok.......")
-                        for police_data in policies:
-                            PolicyService(self._user).update_or_create(police_data, self._user)
+                            insuree = InsureeService(self._user).create_or_update(head_insuree_data)
+                            logger.info("Assuree cree %s", insuree)
+                            if sub_family and number_count == 2:
+                                sub_family.head_insuree_id = insuree.id
+                                insuree.head = True
+                                insuree.save()
+                                sub_family.save()
+                            logger.info("creation groupe d'itentification ok.......")
+                            for police_data in policies:
+                                PolicyService(self._user).update_or_create(police_data, self._user)
                 logger.info("Fin du traitement d'import.......")
         except Exception as e:
             return InsureeImportExportService._get_general_error('FAILED TO IMPORT FILE: ', e)
