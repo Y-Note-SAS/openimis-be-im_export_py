@@ -366,7 +366,13 @@ class FamilyImportExportService:
                                     )
                                 head_insuree_data["profession_id"] = int(r.get("Catégories_professionnelles"))+1
                             if r.get("Types de formation") is not None and r.get("Types de formation") != "":
-                                head_insuree_data["education_id"] = int(r.get("Types de formation"))
+                                educations = {
+                                    0: 1,
+                                    1: 2
+                                }
+                                educ = int(r.get("Types de formation"))
+                                education_id = educations.get(educ)
+                                head_insuree_data["education_id"] = education_id
                             jsonext = {}
                             jsonext.update({
                                 "data": {
