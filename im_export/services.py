@@ -12,7 +12,6 @@ from contribution.models import Premium
 from policy.models import Policy
 from policy.services import PolicyService
 from core.models import Officer
-from payer.models import Payer
 from datetime import datetime, timedelta
 from uuid import uuid4
 from django.contrib.contenttypes.models import ContentType
@@ -455,20 +454,20 @@ class FamilyImportExportService:
                                     value = 1
                                 if amount_family == 3500:
                                     contribution_plan_code = "AMOS1"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 2500:
                                     contribution_plan_code = "AMOS2"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 2000:
                                     contribution_plan_code = "AMOS3"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 1500:
                                     contribution_plan_code = "AMOS4"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 0:
                                     contribution_plan_code = "AMS"
                                     periodicity = "Y"
