@@ -21,7 +21,7 @@ setup(
     author_email='patrick.delcroix@swisstph.ch',
     install_requires=[
         'django',
-        'django-import-export>=4.1.1,<4.2',
+        'django-import-export',
         'tablib',
     ],
     classifiers=[
