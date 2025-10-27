@@ -21,8 +21,12 @@ setup(
     author_email='patrick.delcroix@swisstph.ch',
     install_requires=[
         'django',
-        'django-import-export',
+        'django-import-export>=4.1.1,<4.2',
         'tablib',
+        'django-import-export[xlsx]',
+        'tablib[xls]',
+        'xlrd',
+        'xlwt',
     ],
     classifiers=[
         'Environment :: Web Environment',
