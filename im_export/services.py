@@ -566,7 +566,7 @@ class FamilyImportExportService:
                                     sub_family.save()
                         logger.info("creation groupe d'itentification ok.......")
                         for police_data in policies:
-                            PolicyService(self._user).update_or_create(police_data, self._user)
+                            PolicyService(self._user).update_or_create(police_data, self._user, True)
                 logger.info("Fin du traitement d'import.......")
         except Exception as e:
             return InsureeImportExportService._get_general_error('FAILED TO IMPORT FILE: ', e)
