@@ -834,16 +834,19 @@ class BankImportService:
             ).order_by("start_date").first()
             
             # Vérifier si la police est expirée et si la période d'attente est dépassée
-            waiting_period = timedelta(days=60)
+            product = policy.product
+            grace_days = product.gracePeriodPayment * 30 if product.gracePeriodPayment else 0
+            grace_period = timedelta(days=grace_days)
+
             is_expired_and_late = (
                 policy.status == Policy.STATUS_EXPIRED and
                 policy.expiry_date and
-                policy.expiry_date + waiting_period < data.date_payment
+                policy.expiry_date + grace_period < data.date_payment
             )
 
             if is_expired_and_late:
                 logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée")
-                
+
                 new_policy = Policy(
                     family=family,
                     product=policy.product,
@@ -851,8 +854,6 @@ class BankImportService:
                     stage=Policy.STAGE_RENEWED,
                     start_date=data.date_payment,
                     enroll_date=policy.enroll_date,
-                    expiry_date=data.date_payment + timedelta(days=30),
-                    value=policy.value, 
                     signature_date=policy.signature_date,
                     officer=policy.officer,
                     periodicity=policy.periodicity,
@@ -872,7 +873,10 @@ class BankImportService:
                 policy = new_policy
 
             if policy:
-                
+                from policy.values import set_expiry_date
+                set_expiry_date(policy)
+                policy.expiry_date += grace_period
+                policy.save()
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
