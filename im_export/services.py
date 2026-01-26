@@ -837,10 +837,7 @@ class BankImportService:
                 policy = new_policy
 
             if policy:
-                from policy.values import set_expiry_date
-                set_expiry_date(policy)
-                policy.expiry_date += grace_period
-                policy.save()
+                payer = Payer.objects.filter(type='C').first()
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
