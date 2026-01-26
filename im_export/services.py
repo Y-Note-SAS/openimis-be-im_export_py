@@ -854,6 +854,7 @@ class BankImportService:
                     stage=Policy.STAGE_RENEWED,
                     start_date=data.date_payment,
                     enroll_date=policy.enroll_date,
+                    value=policy.value,
                     signature_date=policy.signature_date,
                     officer=policy.officer,
                     periodicity=policy.periodicity,
