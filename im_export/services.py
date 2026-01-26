@@ -874,9 +874,13 @@ class BankImportService:
 
             if policy:
                 from policy.values import set_expiry_date
+                print(f"there is the expiry date before {policy.expiry_date}")
                 set_expiry_date(policy)
+                print(f"there is the set_expiry_date {policy.expiry_date}")
                 policy.expiry_date += grace_period
                 policy.save()
+                print(f"there is the grace period {grace_period}")
+                print(f"there is the expiry date after {policy.expiry_date}")
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
