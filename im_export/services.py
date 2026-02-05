@@ -12,7 +12,6 @@ from contribution.models import Premium
 from policy.models import Policy
 from policy.services import PolicyService
 from core.models import Officer
-from payer.models import Payer
 from datetime import datetime, timedelta
 from uuid import uuid4
 from django.contrib.contenttypes.models import ContentType
@@ -838,7 +837,7 @@ class BankImportService:
                 policy = new_policy
 
             if policy:
-                payer = Payer.objects.filter(type='C').first()
+
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
@@ -846,8 +845,7 @@ class BankImportService:
                     "pay_type": "B",
                     "is_photo_fee": False,
                     "amount": data.amount_received,
-                    "policy": policy,
-                    "payer": payer
+                    "policy": policy
                 }
                 
                 premium = Premium(**premium_data)
