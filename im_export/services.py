@@ -365,7 +365,13 @@ class FamilyImportExportService:
                                     )
                                 head_insuree_data["profession_id"] = int(r.get("Catégories_professionnelles"))+1
                             if r.get("Types de formation") is not None and r.get("Types de formation") != "":
-                                head_insuree_data["education_id"] = int(r.get("Types de formation"))
+                                educations = {
+                                    0: 1,
+                                    1: 2
+                                }
+                                educ = int(r.get("Types de formation"))
+                                education_id = educations.get(educ)
+                                head_insuree_data["education_id"] = education_id
                             jsonext = {}
                             jsonext.update({
                                 "data": {
@@ -416,20 +422,20 @@ class FamilyImportExportService:
                                     value = 1
                                 if amount_family == 3500:
                                     contribution_plan_code = "AMOS1"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 2500:
                                     contribution_plan_code = "AMOS2"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 2000:
                                     contribution_plan_code = "AMOS3"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 1500:
                                     contribution_plan_code = "AMOS4"
-                                    periodicity = "Q"
-                                    value = 3
+                                    periodicity = "M"
+                                    value = 1
                                 if amount_family == 0:
                                     contribution_plan_code = "AMS"
                                     periodicity = "Y"
@@ -558,8 +564,8 @@ class BankImportService:
             try:
                 chf_id = str(int(row[0])) if isinstance(row[0], float) else str(row[0]).strip()
                 date = row[2]
-                description = str(row[5]).strip()
-                amount_raw = row[4]
+                description = str(row[3]).strip()
+                amount_raw = row[1]
 
                 if not amount_raw:
                     raise ValueError("Montant manquant ou vide")
@@ -571,7 +577,7 @@ class BankImportService:
                 if amount > 0:
                     transactions.append({
                         "insuree_chf_id": chf_id,
-                        "date": date.isoformat() if isinstance(date, datetime) else str(date),
+                        "date": date.isoformat() if isinstance(date, datetime) else datetime.strptime(str(date).strip(), "%m/%d/%Y").isoformat(),
                         "description": description,
                         "amount": str(amount),
                         "code_tp": "BDC",
@@ -580,7 +586,7 @@ class BankImportService:
                         "label": description,
                         "fees": "0.00",
                         "amount_received": str(amount),
-                        "date_payment": date.isoformat() if isinstance(date, datetime) else str(date),
+                        "date_payment": date.isoformat() if isinstance(date, datetime) else datetime.strptime(str(date).strip(), "%m/%d/%Y").isoformat(),
                         "payment_origin": "Banque",
                         "payer_ref": chf_id,
                     })
@@ -791,16 +797,19 @@ class BankImportService:
             ).order_by("start_date").first()
             
             # Vérifier si la police est expirée et si la période d'attente est dépassée
-            waiting_period = timedelta(days=60)
+            product = policy.product
+            grace_days = product.grace_period_payment * 30 if product.grace_period_payment else 0
+            grace_period = timedelta(days=grace_days)
+
             is_expired_and_late = (
                 policy.status == Policy.STATUS_EXPIRED and
                 policy.expiry_date and
-                policy.expiry_date + waiting_period < data.date_payment
+                policy.expiry_date + grace_period < data.date_payment
             )
 
             if is_expired_and_late:
                 logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée")
-                
+
                 new_policy = Policy(
                     family=family,
                     product=policy.product,
@@ -808,7 +817,6 @@ class BankImportService:
                     stage=Policy.STAGE_RENEWED,
                     start_date=data.date_payment,
                     enroll_date=policy.enroll_date,
-                    expiry_date=data.date_payment + timedelta(days=30),
                     value=policy.value, 
                     signature_date=policy.signature_date,
                     officer=policy.officer,
@@ -829,7 +837,7 @@ class BankImportService:
                 policy = new_policy
 
             if policy:
-                
+
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
