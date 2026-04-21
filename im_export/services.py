@@ -729,9 +729,8 @@ class BankImportService:
             return Invoice.objects.filter(
                 subject_id=str(insuree.id),
                 status=Invoice.Status.VALIDATED,
-                is_deleted=False
-            ).exclude(
-                code__endswith='-G'
+                is_deleted=False,
+                thirdparty_type=73
             ).order_by("date_invoice").first()
         except Insuree.DoesNotExist:
             return None
