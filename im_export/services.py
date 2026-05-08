@@ -695,7 +695,7 @@ class BankImportService:
                     if credit_val and Decimal(credit_val) > 0:
                         ref = str(row[reference_idx]) if row[reference_idx] else f"ref_{uuid4()}"
                         date_str = row[date_idx]
-                        payment_source = row[payment_source_idx]
+                        payment_source = str(row[payment_source_idx]).upper()
                         if isinstance(date_str, datetime):
                             date_formatted = date_str.date().isoformat()
                         else:
@@ -839,7 +839,7 @@ class BankImportService:
             message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
         )
         
-        premium = self.create_premium(chf_id, payment_invoice)
+        premium = self.create_premium(chf_id, payment_invoice, code_tp)
         return {
             "invoice_code": invoice.code,
             "payment_id": payment_invoice.id,
@@ -849,7 +849,7 @@ class BankImportService:
             "amount": str(invoice.amount_total),
         }
 
-    def create_premium(self, chf_id, data):
+    def create_premium(self, chf_id, data, code_tp):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
@@ -904,7 +904,7 @@ class BankImportService:
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
                     "pay_date": data.date_payment,
-                    "pay_type": "B",
+                    "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
                     "is_photo_fee": False,
                     "amount": data.amount_received,
                     "policy": policy
