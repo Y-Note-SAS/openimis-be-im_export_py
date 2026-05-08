@@ -732,7 +732,7 @@ class BankImportService:
                     if credit_val and Decimal(credit_val) > 0:
                         ref = str(row[reference_idx]) if row[reference_idx] else f"ref_{uuid4()}"
                         date_str = row[date_idx]
-                        payment_source = row[payment_source_idx]
+                        payment_source = str(row[payment_source_idx]).upper()
                         if isinstance(date_str, datetime):
                             date_formatted = date_str.date().isoformat()
                         else:
@@ -936,7 +936,6 @@ class BankImportService:
                 policy = new_policy
 
             if policy:
-
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
