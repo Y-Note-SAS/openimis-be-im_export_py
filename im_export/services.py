@@ -873,6 +873,7 @@ class BankImportService:
                 policy = new_policy
 
             if policy:
+
                 premium_data = {
                     "audit_user_id": self._user.id,
                     "receipt": data.code_receipt,
