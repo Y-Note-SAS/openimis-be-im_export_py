@@ -910,7 +910,6 @@ class BankImportService:
 
             if is_expired_and_late:
                 logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée")
-                print("expirée et période d'attente dépassée, création d'une police renouvelée")
 
                 new_policy = Policy(
                     family=family,
