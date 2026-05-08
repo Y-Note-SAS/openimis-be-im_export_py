@@ -30,6 +30,7 @@ from product.models import Product
 import os
 from pathlib import Path
 import copy
+from policy.services import update_insuree_policies
 
 logger = logging.getLogger(__name__)
 
@@ -834,6 +835,7 @@ class BankImportService:
                 logger.info(f"Ancienne police {policy.id} marquée comme renouvelée et desactivée")
 
                 policy = new_policy
+                update_insuree_policies(policy, self._user.id)
 
             if policy:
 
