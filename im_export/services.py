@@ -797,15 +797,9 @@ class BankImportService:
             ).order_by("start_date").first()
             
             # Vérifier si la police est expirée et si la période d'attente est dépassée
-            # product = policy.product
-            # grace_days = product.grace_period_payment * 30 if product.grace_period_payment else 0
-            # grace_period = timedelta(days=grace_days)
 
             is_expired_and_late = (
                 policy.status == Policy.STATUS_EXPIRED
-                # and
-                # policy.expiry_date and
-                # policy.expiry_date + grace_period < data.date_payment
             )
 
             if is_expired_and_late:
