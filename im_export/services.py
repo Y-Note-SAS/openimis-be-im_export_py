@@ -30,6 +30,7 @@ from product.models import Product
 import os
 from pathlib import Path
 import copy
+from policy.services import policy_status_premium_paid
 
 logger = logging.getLogger(__name__)
 
@@ -850,6 +851,12 @@ class BankImportService:
                 premium = Premium(**premium_data)
                 created = update_or_create_premium(premium, self._user)
                 logger.info(f"Contribution créée avec succès pour police {policy.id}")
+                policy_status_premium_paid(
+                    policy,
+                    premium.pay_date
+                    if premium.pay_date > policy.start_date
+                    else policy.start_date,
+                )
                 return created
             else:
                 logger.warning(f"Aucune police active trouvée pour la famille {family.id}")
