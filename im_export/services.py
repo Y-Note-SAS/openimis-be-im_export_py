@@ -794,7 +794,7 @@ class BankImportService:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True) 
             return Invoice.objects.filter(
                 subject_id=str(insuree.id),
-                # status=Invoice.Status.VALIDATED,
+                status=Invoice.Status.VALIDATED,
                 is_deleted=False,
                 thirdparty_type=73
             ).order_by("date_invoice").first()
