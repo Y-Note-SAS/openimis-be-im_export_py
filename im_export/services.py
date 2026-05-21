@@ -879,7 +879,7 @@ class BankImportService:
             message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
         )
         
-        premium = self.create_premium(chf_id, payment_invoice, code_tp)
+        premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date())
         return {
             "invoice_code": invoice.code,
             "payment_id": payment_invoice.id,
@@ -889,7 +889,7 @@ class BankImportService:
             "amount": str(invoice.amount_total),
         }
 
-    def create_premium(self, chf_id, data, code_tp):
+    def create_premium(self, chf_id, data, code_tp, invoice_date_from):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
@@ -925,13 +925,12 @@ class BankImportService:
                     # Si expirée, on cree la nouvelle police, son paiement, son insuree_policy et sa date d'expiration
                     logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée.")
 
-                    next_start_date = policy.expiry_date + relativedelta(days=1) #(Si expiré le 10/10/2025 ca recommence le 11/10/2025 et
                     new_policy = Policy(
                         family=family,
                         product=policy.product,
                         status=Policy.STATUS_IDLE,
                         stage=Policy.STAGE_RENEWED,
-                        start_date=next_start_date,
+                        start_date=invoice_date_from,
                         enroll_date=policy.enroll_date,
                         value=policy.value,
                         signature_date=policy.signature_date,
@@ -943,7 +942,7 @@ class BankImportService:
                         validity_from=TimeUtils.now()
                     )
                     new_policy.save()
-                    logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={next_start_date}")
+                    logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={invoice_date_from}")
 
                     policy.stage = Policy.STAGE_RENEWED
                     policy.validity_to = timezone.now()
@@ -963,16 +962,12 @@ class BankImportService:
                     premium = Premium(**premium_data)
                     created = update_or_create_premium(premium, self._user)
                     logger.info(f"Contribution créée avec succès pour la nouvelle police: {new_policy.id}")
-                    # Ici, il s'agit d'une nouvelle police, on doit passer la bonne effective
-                    # (next_start_date) qui est expiry date + 1
-                    # (Si expiré le 10/10/2025 ca recommence le 11/10/2025 et
-                    # la fonction va rajouter le nombre de mois correspondant + periode de grace)
                     policy_status_premium_paid(
                         new_policy,
-                        next_start_date
+                        invoice_date_from
                     )
-                    logger.info("Comparaison de date apres recalcul %s et la date du jour %s police traité", policy.expiry_date, py_datetime.today().date())
-                    if new_policy.expiry_date <= py_datetime.today().date():
+                    logger.info("Comparaison de date apres recalcul %s et la date du jour %s police traité", new_policy.expiry_date, py_datetime.today().date())
+                    if new_policy.expiry_date < py_datetime.today().date():
                         # La police est quand meme expirée, il faut un autre payment pour creeer une nouvelle police
                         # afin de ne pas manquer une période non payée
                         logger.info("La police est quand meme expirée")
