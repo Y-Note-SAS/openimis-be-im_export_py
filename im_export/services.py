@@ -894,14 +894,15 @@ class BankImportService:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
             policy = Policy.objects.filter(
-                family=family, validity_to__isnull=True, 
-                status__in=[Policy.STATUS_IDLE, Policy.STATUS_EXPIRED],
+                family=family, validity_to__isnull=True
+            ).exclude(
+                status__in=[Policy.STATUS_SUSPENDED, Policy.STATUS_READY]
             ).order_by("start_date").first()
 
             if policy:
                 # Si la police n'est pas encore expirée, on la mets a jour (expiry date) et
                 # on cree la premium puis on fait un return
-                if policy.status != Policy.STATUS_EXPIRED:
+                if policy.status == Policy.STATUS_IDLE:
                     premium_data = {
                         "audit_user_id": self._user.id,
                         "receipt": data.code_receipt,
