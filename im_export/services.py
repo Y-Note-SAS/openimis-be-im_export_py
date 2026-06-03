@@ -921,6 +921,28 @@ class BankImportService:
                     policy.save()
                     return created
 
+                if policy.status == Policy.STATUS_ACTIVE:
+                    # Si active, on étend la date d'expiration avec la période de grace
+                    logger.info("Police %s encore active, on étend la date d'expiration", policy.id)
+                    # Calcul de la date d'expiration en fonction de la périodicité
+                    if policy.periodicity == Policy.MONTHLY:
+                        base_expiry= policy.expiry_date + relativedelta(months=1)
+                    elif policy.periodicity == Policy.QUARTERLY:
+                        base_expiry = policy.expiry_date + relativedelta(months=3)
+                    elif policy.periodicity == Policy.SEMESTER:
+                        base_expiry = policy.expiry_date + relativedelta(months=6)
+                    elif policy.periodicity == Policy.YEARLY:
+                        base_expiry = policy.expiry_date + relativedelta(years=1)
+                    else:
+                        base_expiry = policy.expiry_date + relativedelta(months=1)
+
+                    product = policy.product
+                    grace_days = (product.grace_period_payment or 0) * 30
+                    grace_period = timedelta(days=grace_days) if grace_days else timedelta(0)
+                    logger.warning("grace_period is %s ", grace_period)
+                    policy.expiry_date = base_expiry + grace_period
+                    logger.warning("expiry date is %s ", policy.expiry_date)
+                    policy.save()
                 if policy.status == Policy.STATUS_EXPIRED:
                     # Si expirée, on cree la nouvelle police, son paiement, son insuree_policy et sa date d'expiration
                     logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée.")
