@@ -894,14 +894,15 @@ class BankImportService:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
             policy = Policy.objects.filter(
-                family=family, validity_to__isnull=True, 
-                status__in=[Policy.STATUS_IDLE, Policy.STATUS_EXPIRED],
+                family=family, validity_to__isnull=True
+            ).exclude(
+                status__in=[Policy.STATUS_SUSPENDED, Policy.STATUS_READY]
             ).order_by("start_date").first()
 
             if policy:
                 # Si la police n'est pas encore expirée, on la mets a jour (expiry date) et
                 # on cree la premium puis on fait un return
-                if policy.status != Policy.STATUS_EXPIRED:
+                if policy.status == Policy.STATUS_IDLE:
                     premium_data = {
                         "audit_user_id": self._user.id,
                         "receipt": data.code_receipt,
@@ -921,6 +922,28 @@ class BankImportService:
                     policy.save()
                     return created
 
+                if policy.status == Policy.STATUS_ACTIVE:
+                    # Si active, on étend la date d'expiration avec la période de grace
+                    logger.info("Police %s encore active, on étend la date d'expiration", policy.id)
+                    # Calcul de la date d'expiration en fonction de la périodicité
+                    if policy.periodicity == Policy.MONTHLY:
+                        base_expiry= policy.expiry_date + relativedelta(months=1)
+                    elif policy.periodicity == Policy.QUARTERLY:
+                        base_expiry = policy.expiry_date + relativedelta(months=3)
+                    elif policy.periodicity == Policy.SEMESTER:
+                        base_expiry = policy.expiry_date + relativedelta(months=6)
+                    elif policy.periodicity == Policy.YEARLY:
+                        base_expiry = policy.expiry_date + relativedelta(years=1)
+                    else:
+                        base_expiry = policy.expiry_date + relativedelta(months=1)
+
+                    product = policy.product
+                    grace_days = (product.grace_period_payment or 0) * 30
+                    grace_period = timedelta(days=grace_days) if grace_days else timedelta(0)
+                    logger.warning("grace_period is %s ", grace_period)
+                    policy.expiry_date = base_expiry + grace_period
+                    logger.warning("expiry date is %s ", policy.expiry_date)
+                    policy.save()
                 if policy.status == Policy.STATUS_EXPIRED:
                     # Si expirée, on cree la nouvelle police, son paiement, son insuree_policy et sa date d'expiration
                     logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée.")
