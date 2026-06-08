@@ -825,7 +825,6 @@ class BankImportService:
                 logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={data.date_payment}")
 
                 policy.stage = Policy.STAGE_RENEWED
-                policy.validity_to = timezone.now()
                 policy.save()
                 logger.info(f"Ancienne police {policy.id} marquée comme renouvelée et desactivée")
 
