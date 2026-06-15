@@ -797,7 +797,7 @@ class BankImportService:
                 status=Invoice.Status.VALIDATED,
                 is_deleted=False,
                 thirdparty_type=73
-            ).order_by("date_invoice").first()
+            ).order_by("date_valid_from").first()
         except Insuree.DoesNotExist:
             return None
 
@@ -917,7 +917,7 @@ class BankImportService:
                     logger.info(f"Contribution créée avec succès pour police: {policy.id}")
                     policy_status_premium_paid(
                         policy,
-                        policy.start_date
+                        invoice_date_from
                     )
                     policy.save()
                     return created
