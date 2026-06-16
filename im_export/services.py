@@ -805,6 +805,44 @@ class BankImportService:
         chf_id = tx["insuree_chf_id"]
         if not chf_id:
             raise Exception("Numéro d'assuré manquant")
+        # 1. Récupération de l'assuré
+        try:
+            insuree = Insuree.objects.get(
+                chf_id=chf_id,
+                validity_to__isnull=True
+            )
+        except Insuree.DoesNotExist:
+            raise Exception(f"Assuré introuvable avec chf_id={chf_id}")
+
+        # 2. Récupération de la famille
+        try:
+            family = Family.objects.get(
+                head_insuree=insuree,
+                validity_to__isnull=True
+            )
+        except Family.DoesNotExist:
+            raise Exception(f"Famille introuvable pour l'assuré {chf_id}")
+
+        # 3. Récupération des polices actives
+        policies = Policy.objects.filter(
+            family=family,
+            validity_to__isnull=True
+        )
+
+        # 4. Vérification suspension
+        total_policies = policies.count()
+        nb_suspend = policies.filter(
+            status=Policy.STATUS_SUSPENDED
+        ).count()
+
+        # 5. Vérification
+        if total_policies == 0:
+            raise Exception("Aucune police trouvée pour cette famille.")
+
+        if total_policies == nb_suspend:
+            raise Exception(
+                "La police que vous essayez de payer est suspendue."
+            )
 
         invoice = self.find_invoice(chf_id)
         if not invoice:
