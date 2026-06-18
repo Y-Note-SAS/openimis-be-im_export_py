@@ -666,6 +666,69 @@ class BankImportService:
             "count": len(transactions),
         }
     
+    def parse_excel_other_payment(self, file):
+        wb = openpyxl.load_workbook(file)
+        sheet = wb.active
+
+        transactions = []
+        total_kmf = Decimal("0.00")
+        start_parsing = False
+
+        for row in sheet.iter_rows(values_only=True):
+            if not start_parsing:
+                if row and any("Txn. Date" in str(cell) for cell in row if cell):
+                    headers = [str(h).strip() if h else None for h in row]
+                    try:
+                        date_idx = headers.index("Txn. Date")
+                        desc_idx = headers.index("Description")
+                        credit_idx = headers.index("Credit")
+                        payment_source_idx = headers.index("Mode de paiement")
+                        reference_idx = headers.index("Txn.Ref No")
+                    except ValueError as e:
+                        raise Exception("Colonnes attendues non trouvées dans le fichier (Txn. Date, Description, Credit)") from e
+                    start_parsing = True
+                    continue
+
+            if start_parsing:
+                if row and str(row[1]).startswith("Opening Balance"):
+                    break
+
+                try:
+                    credit_val = row[credit_idx]
+                    if credit_val and Decimal(credit_val) > 0:
+                        ref = str(row[reference_idx]) if row[reference_idx] else f"ref_{uuid4()}"
+                        date_str = row[date_idx]
+                        payment_source = str(row[payment_source_idx]).upper()
+                        if isinstance(date_str, datetime):
+                            date_formatted = date_str.date().isoformat()
+                        else:
+                            date_formatted = datetime.strptime(date_str, "%b %d, %Y").date().isoformat()
+                        transactions.append({
+                            "date": date_formatted,
+                            "description": str(row[desc_idx]),
+                            "amount": str(Decimal(credit_val)),
+                            "insuree_chf_id": ref,
+                            "code_ext": ref,
+                            "label": str(row[desc_idx]),
+                            "code_tp": payment_source,
+                            "code_receipt": f"receipt_{uuid4()}",
+                            "fees": "0.00",
+                            "amount_received": str(Decimal(credit_val)),
+                            "date_payment": date_formatted,
+                            "payment_origin": payment_source,
+                            "payer_ref": ref,
+                        })
+                        total_kmf += Decimal(credit_val)
+                except Exception as e:
+                    print(f"Erreur parsing ligne: {row} - {e}")
+                    continue
+
+        return {
+            "transactions": transactions,
+            "total_kmf": str(total_kmf),
+            "count": len(transactions),
+        }
+    
     def parse_date(self, date_str):
         for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%b %d, %Y", "%d/%m/%Y", "%d/%m/%y"):
             try:
@@ -817,7 +880,7 @@ class BankImportService:
             message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
         )
         
-        premium = self.create_premium(chf_id, payment_invoice, invoice.date_valid_from.date())
+        premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date())
         return {
             "invoice_code": invoice.code,
             "payment_id": payment_invoice.id,
@@ -827,7 +890,7 @@ class BankImportService:
             "amount": str(invoice.amount_total),
         }
 
-    def create_premium(self, chf_id, data, invoice_date_from):
+    def create_premium(self, chf_id, data, code_tp, invoice_date_from):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
@@ -845,7 +908,7 @@ class BankImportService:
                         "audit_user_id": self._user.id,
                         "receipt": data.code_receipt,
                         "pay_date": data.date_payment,
-                        "pay_type": "B",
+                        "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
                         "is_photo_fee": False,
                         "amount": data.amount_received,
                         "policy": policy
