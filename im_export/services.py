@@ -30,6 +30,9 @@ from product.models import Product
 import os
 from pathlib import Path
 import copy
+from policy.services import update_insuree_policies
+from policy.services import policy_status_premium_paid
+from dateutil.relativedelta import relativedelta
 
 logger = logging.getLogger(__name__)
 
@@ -757,7 +760,7 @@ class BankImportService:
                 status=Invoice.Status.VALIDATED,
                 is_deleted=False,
                 thirdparty_type=73
-            ).order_by("date_invoice").first()
+            ).order_by("date_valid_from").first()
         except Insuree.DoesNotExist:
             return None
 
@@ -765,6 +768,44 @@ class BankImportService:
         chf_id = tx["insuree_chf_id"]
         if not chf_id:
             raise Exception("Numéro d'assuré manquant")
+        # 1. Récupération de l'assuré
+        try:
+            insuree = Insuree.objects.get(
+                chf_id=chf_id,
+                validity_to__isnull=True
+            )
+        except Insuree.DoesNotExist:
+            raise Exception(f"Assuré introuvable avec chf_id={chf_id}")
+
+        # 2. Récupération de la famille
+        try:
+            family = Family.objects.get(
+                head_insuree=insuree,
+                validity_to__isnull=True
+            )
+        except Family.DoesNotExist:
+            raise Exception(f"Famille introuvable pour l'assuré {chf_id}")
+
+        # 3. Récupération des polices actives
+        policies = Policy.objects.filter(
+            family=family,
+            validity_to__isnull=True
+        )
+
+        # 4. Vérification suspension
+        total_policies = policies.count()
+        nb_suspend = policies.filter(
+            status=Policy.STATUS_SUSPENDED
+        ).count()
+
+        # 5. Vérification
+        if total_policies == 0:
+            raise Exception("Aucune police trouvée pour cette famille.")
+
+        if total_policies == nb_suspend:
+            raise Exception(
+                "La police que vous essayez de payer est suspendue."
+            )
 
         invoice = self.find_invoice(chf_id)
         if not invoice:
@@ -839,7 +880,7 @@ class BankImportService:
             message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
         )
         
-        premium = self.create_premium(chf_id, payment_invoice, code_tp)
+        premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date())
         return {
             "invoice_code": invoice.code,
             "payment_id": payment_invoice.id,
@@ -849,71 +890,113 @@ class BankImportService:
             "amount": str(invoice.amount_total),
         }
 
-    def create_premium(self, chf_id, data, code_tp):
+    def create_premium(self, chf_id, data, code_tp, invoice_date_from):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
             policy = Policy.objects.filter(
-                family=family, validity_to__isnull=True, 
-                status__in=[Policy.STATUS_IDLE, Policy.STATUS_EXPIRED],
+                family=family, validity_to__isnull=True
+            ).exclude(
+                status__in=[Policy.STATUS_SUSPENDED, Policy.STATUS_READY]
             ).order_by("start_date").first()
-            
-            # Vérifier si la police est expirée et si la période d'attente est dépassée
-            product = policy.product
-            grace_days = product.grace_period_payment * 30 if product.grace_period_payment else 0
-            grace_period = timedelta(days=grace_days)
-
-            is_expired_and_late = (
-                policy.status == Policy.STATUS_EXPIRED and
-                policy.expiry_date and
-                policy.expiry_date + grace_period < data.date_payment
-            )
-
-            if is_expired_and_late:
-                logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée")
-
-                new_policy = Policy(
-                    family=family,
-                    product=policy.product,
-                    status=Policy.STATUS_IDLE,
-                    stage=Policy.STAGE_RENEWED,
-                    start_date=data.date_payment,
-                    enroll_date=policy.enroll_date,
-                    value=policy.value, 
-                    signature_date=policy.signature_date,
-                    officer=policy.officer,
-                    periodicity=policy.periodicity,
-                    payment_day=policy.payment_day,
-                    contribution_plan=policy.contribution_plan,
-                    audit_user_id=self._user.id,
-                    validity_from=TimeUtils.now()
-                )
-                new_policy.save()
-                logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={data.date_payment}")
-
-                policy.stage = Policy.STAGE_RENEWED
-                policy.validity_to = timezone.now()
-                policy.save()
-                logger.info(f"Ancienne police {policy.id} marquée comme renouvelée et desactivée")
-
-                policy = new_policy
 
             if policy:
+                # Si la police n'est pas encore expirée, on la mets a jour (expiry date) et
+                # on cree la premium puis on fait un return
+                if policy.status == Policy.STATUS_IDLE:
+                    premium_data = {
+                        "audit_user_id": self._user.id,
+                        "receipt": data.code_receipt,
+                        "pay_date": data.date_payment,
+                        "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
+                        "is_photo_fee": False,
+                        "amount": data.amount_received,
+                        "policy": policy
+                    }
+                    premium = Premium(**premium_data)
+                    created = update_or_create_premium(premium, self._user)
+                    logger.info(f"Contribution créée avec succès pour police: {policy.id}")
+                    policy_status_premium_paid(
+                        policy,
+                        invoice_date_from
+                    )
+                    policy.save()
+                    return created
 
-                premium_data = {
-                    "audit_user_id": self._user.id,
-                    "receipt": data.code_receipt,
-                    "pay_date": data.date_payment,
-                    "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
-                    "is_photo_fee": False,
-                    "amount": data.amount_received,
-                    "policy": policy
-                }
-                
-                premium = Premium(**premium_data)
-                created = update_or_create_premium(premium, self._user)
-                logger.info(f"Contribution créée avec succès pour police {policy.id}")
-                return created
+                if policy.status == Policy.STATUS_ACTIVE:
+                    # Si active, on étend la date d'expiration avec la période de grace
+                    logger.info("Police %s encore active, on étend la date d'expiration", policy.id)
+                    # Calcul de la date d'expiration en fonction de la périodicité
+                    if policy.periodicity == Policy.MONTHLY:
+                        base_expiry= policy.expiry_date + relativedelta(months=1)
+                    elif policy.periodicity == Policy.QUARTERLY:
+                        base_expiry = policy.expiry_date + relativedelta(months=3)
+                    elif policy.periodicity == Policy.SEMESTER:
+                        base_expiry = policy.expiry_date + relativedelta(months=6)
+                    elif policy.periodicity == Policy.YEARLY:
+                        base_expiry = policy.expiry_date + relativedelta(years=1)
+                    else:
+                        base_expiry = policy.expiry_date + relativedelta(months=1)
+
+                    product = policy.product
+                    grace_days = (product.grace_period_payment or 0) * 30
+                    grace_period = timedelta(days=grace_days) if grace_days else timedelta(0)
+                    logger.warning("grace_period is %s ", grace_period)
+                    policy.expiry_date = base_expiry + grace_period
+                    logger.warning("expiry date is %s ", policy.expiry_date)
+                    policy.save()
+                if policy.status == Policy.STATUS_EXPIRED:
+                    # Si expirée, on cree la nouvelle police, son paiement, son insuree_policy et sa date d'expiration
+                    logger.info(f"Police {policy.id} expirée et période d'attente dépassée, création d'une police renouvelée.")
+
+                    new_policy = Policy(
+                        family=family,
+                        product=policy.product,
+                        status=Policy.STATUS_IDLE,
+                        stage=Policy.STAGE_RENEWED,
+                        start_date=invoice_date_from,
+                        enroll_date=policy.enroll_date,
+                        value=policy.value,
+                        signature_date=policy.signature_date,
+                        officer=policy.officer,
+                        periodicity=policy.periodicity,
+                        payment_day=policy.payment_day,
+                        contribution_plan=policy.contribution_plan,
+                        audit_user_id=self._user.id,
+                        validity_from=TimeUtils.now()
+                    )
+                    new_policy.save()
+                    logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={invoice_date_from}")
+
+                    policy.stage = Policy.STAGE_RENEWED
+                    policy.validity_to = timezone.now()
+                    policy.save()
+                    logger.info(f"Ancienne police {policy.id} marquée comme renouvelée et desactivée")
+
+                    update_insuree_policies(new_policy, self._user.id)
+                    premium_data = {
+                        "audit_user_id": self._user.id,
+                        "receipt": data.code_receipt,
+                        "pay_date": data.date_payment,
+                        "pay_type": "B",
+                        "is_photo_fee": False,
+                        "amount": data.amount_received,
+                        "policy": new_policy
+                    }
+                    premium = Premium(**premium_data)
+                    created = update_or_create_premium(premium, self._user)
+                    logger.info(f"Contribution créée avec succès pour la nouvelle police: {new_policy.id}")
+                    policy_status_premium_paid(
+                        new_policy,
+                        invoice_date_from
+                    )
+                    logger.info("Comparaison de date apres recalcul %s et la date du jour %s police traité", new_policy.expiry_date, py_datetime.today().date())
+                    if new_policy.expiry_date < py_datetime.today().date():
+                        # La police est quand meme expirée, il faut un autre payment pour creeer une nouvelle police
+                        # afin de ne pas manquer une période non payée
+                        logger.info("La police est quand meme expirée")
+                        new_policy.status = Policy.STATUS_EXPIRED
+                    new_policy.save()
             else:
                 logger.warning(f"Aucune police active trouvée pour la famille {family.id}")
         except Exception as e:
