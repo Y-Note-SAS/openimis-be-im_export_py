@@ -991,7 +991,7 @@ class BankImportService:
                 message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
             )
 
-            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date(), periodicity)
+            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date())
             res = {
                 "invoice_code": invoice.code,
                 "payment_id": payment_invoice.id,
@@ -1103,7 +1103,7 @@ class BankImportService:
         if not result_invoice.get("success"):
             raise Exception(
                 f"Échec de création de la facture pour la période "
-                f"{date_due} - {period_end}: "
+                f"{date_due} - {date_valid_to}: "
                 f"{result_invoice}"
             )
         invoice_line_item_service = InvoiceLineItemService(user=self._user)
@@ -1169,7 +1169,7 @@ class BankImportService:
         return new_invoice, date_valid_to
 
 
-    def create_premium(self, chf_id, data, code_tp, invoice_date_from, period):
+    def create_premium(self, chf_id, data, code_tp, invoice_date_from):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
