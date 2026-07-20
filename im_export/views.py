@@ -94,7 +94,7 @@ def import_exim_bank(request):
                     successful_transactions.append({
                         "ligne": idx,
                         "insuree_chf_id": tx["insuree_chf_id"],
-                        "amount": tx["amount"],
+                        "amount": result["amount"],
                         "invoice_code": result["invoice_code"],
                         "payment_id": result["payment_id"],
                         "premium_uuid": result.get("premium_uuid"),
@@ -165,7 +165,7 @@ def import_bdc_bank(request):
                     successful_transactions.append({
                         "ligne": idx,
                         "insuree_chf_id": tx["insuree_chf_id"],
-                        "amount": tx["amount"],
+                        "amount": result["amount"],
                         "invoice_code": result["invoice_code"],
                         "payment_id": result["payment_id"],
                         "premium_uuid": result.get("premium_uuid"),
@@ -238,7 +238,7 @@ def import_other_payment_method(request):
                     successful_transactions.append({
                         "ligne": idx,
                         "insuree_chf_id": tx["insuree_chf_id"],
-                        "amount": tx["amount"],
+                        "amount": result["amount"],
                         "invoice_code": result["invoice_code"],
                         "payment_id": result["payment_id"],
                         "premium_uuid": result.get("premium_uuid"),

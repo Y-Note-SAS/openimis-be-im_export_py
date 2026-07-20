@@ -849,6 +849,7 @@ class BankImportService:
         if not policy:
             raise Exception("Aucune police en attente, expirée ou active n'a été trouvée pour la famille dont vous souhaitez effectuer le paiement.")
         family_amount = 0
+        amount_paid = 0
         government_amount = 0
         if policy.contribution_plan:
             if isinstance(policy.contribution_plan, (str, UUID)):
@@ -920,6 +921,7 @@ class BankImportService:
                 f"({family_amount} KMF) pour l'assuré {chf_id}."
             )
 
+        amount_paid = amount_received / nb_periods
         # point de départ pour générer les prochaines périodes si besoin
         cursor_period_end = (
             invoice.date_valid_to if invoice else None
@@ -996,7 +998,7 @@ class BankImportService:
                 "detail_payment_id": detail_payment.id,
                 "premium_uuid": str(premium.uuid) if premium else None,
                 "status": "RECONCILIATED",
-                "amount": str(family_amount / qty),
+                "amount": str(amount_paid),
             }
             return_result.append(res)
         return return_result
