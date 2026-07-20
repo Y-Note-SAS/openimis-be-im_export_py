@@ -87,17 +87,20 @@ def import_exim_bank(request):
             
         for idx, tx in enumerate(transactions_result["transactions"], start=1):
             try:
-                result = service.reconcile_bank_transaction(tx)
-                successful_transactions.append({
-                    "ligne": idx,
-                    "insuree_chf_id": tx["insuree_chf_id"],
-                    "amount": tx["amount"],
-                    "invoice_code": result["invoice_code"],
-                    "payment_id": result["payment_id"],
-                    "premium_uuid": result.get("premium_uuid"),
-                    "status": result["status"],
-                    "complete": result.get("premium_uuid") is not None
-                })
+                results = service.reconcile_bank_transaction(tx)
+                if not isinstance(results, list):
+                    results = [results]
+                for result in results:
+                    successful_transactions.append({
+                        "ligne": idx,
+                        "insuree_chf_id": tx["insuree_chf_id"],
+                        "amount": result["amount"],
+                        "invoice_code": result["invoice_code"],
+                        "payment_id": result["payment_id"],
+                        "premium_uuid": result.get("premium_uuid"),
+                        "status": result["status"],
+                        "complete": result.get("premium_uuid") is not None
+                    })
             except Exception as exc:
                 # Ajoute l'erreur avec l'index ou info utile pour retrouver la ligne
                 errors.append(f"Ligne {idx}: {str(exc)}")
@@ -155,17 +158,20 @@ def import_bdc_bank(request):
         
         for idx, tx in enumerate(transactions_result["transactions"], start=1):
             try:
-                result = service.reconcile_bank_transaction(tx)
-                successful_transactions.append({
-                    "ligne": idx,
-                    "insuree_chf_id": tx["insuree_chf_id"],
-                    "amount": tx["amount"],
-                    "invoice_code": result["invoice_code"],
-                    "payment_id": result["payment_id"],
-                    "premium_uuid": result.get("premium_uuid"),
-                    "status": result["status"],
-                    "complete": result.get("premium_uuid") is not None
-                })
+                results = service.reconcile_bank_transaction(tx)
+                if not isinstance(results, list):
+                    results = [results]
+                for result in results:
+                    successful_transactions.append({
+                        "ligne": idx,
+                        "insuree_chf_id": tx["insuree_chf_id"],
+                        "amount": result["amount"],
+                        "invoice_code": result["invoice_code"],
+                        "payment_id": result["payment_id"],
+                        "premium_uuid": result.get("premium_uuid"),
+                        "status": result["status"],
+                        "complete": result.get("premium_uuid") is not None
+                    })
             except Exception as exc:
                 chfid = tx.get("insuree_chf_id", "").strip()
                 
@@ -225,17 +231,20 @@ def import_other_payment_method(request):
             
         for idx, tx in enumerate(transactions_result["transactions"], start=1):
             try:
-                result = service.reconcile_bank_transaction(tx)
-                successful_transactions.append({
-                    "ligne": idx,
-                    "insuree_chf_id": tx["insuree_chf_id"],
-                    "amount": tx["amount"],
-                    "invoice_code": result["invoice_code"],
-                    "payment_id": result["payment_id"],
-                    "premium_uuid": result.get("premium_uuid"),
-                    "status": result["status"],
-                    "complete": result.get("premium_uuid") is not None
-                })
+                results = service.reconcile_bank_transaction(tx)
+                if not isinstance(results, list):
+                    results = [results]
+                for result in results:
+                    successful_transactions.append({
+                        "ligne": idx,
+                        "insuree_chf_id": tx["insuree_chf_id"],
+                        "amount": result["amount"],
+                        "invoice_code": result["invoice_code"],
+                        "payment_id": result["payment_id"],
+                        "premium_uuid": result.get("premium_uuid"),
+                        "status": result["status"],
+                        "complete": result.get("premium_uuid") is not None
+                    })
             except Exception as exc:
                 # Ajoute l'erreur avec l'index ou info utile pour retrouver la ligne
                 errors.append(f"Ligne {idx}: {str(exc)}")
