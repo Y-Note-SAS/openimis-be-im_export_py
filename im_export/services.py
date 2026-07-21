@@ -885,7 +885,6 @@ class BankImportService:
                 if result_signal[0][1]:
                     family_amount = Decimal(result_signal[0][1])
                     logger.info("family_amount = %s ", family_amount)
-        payment_day = 5
         payment_day = policy.payment_day
         periodicity = policy.periodicity
         logger.info("payment_day =: %s", payment_day)
