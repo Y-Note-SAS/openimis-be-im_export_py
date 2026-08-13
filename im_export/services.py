@@ -620,23 +620,22 @@ class BankImportService:
                 amount_str = str(amount_raw).replace(",", ".").replace(" ", "")
                 amount = Decimal(amount_str)    
 
-                if amount > 0:
-                    transactions.append({
-                        "insuree_chf_id": chf_id,
-                        "date": date.isoformat() if isinstance(date, datetime) else datetime.strptime(str(date).strip(), "%m/%d/%Y").isoformat(),
-                        "description": description,
-                        "amount": str(amount),
-                        "code_tp": "BDC",
-                        "code_ext": f"bdc_{uuid4()}",
-                        "code_receipt": f"receipt_{uuid4()}",
-                        "label": description,
-                        "fees": "0.00",
-                        "amount_received": str(amount),
-                        "date_payment": date.isoformat() if isinstance(date, datetime) else datetime.strptime(str(date).strip(), "%m/%d/%Y").isoformat(),
-                        "payment_origin": "Banque",
-                        "payer_ref": chf_id,
-                    })
-                    total_kmf += amount
+                transactions.append({
+                    "insuree_chf_id": chf_id,
+                    "date": date.isoformat() if isinstance(date, datetime) else datetime.strptime(str(date).strip(), "%m/%d/%Y").isoformat(),
+                    "description": description,
+                    "amount": str(amount),
+                    "code_tp": "BDC",
+                    "code_ext": f"bdc_{uuid4()}",
+                    "code_receipt": f"receipt_{uuid4()}",
+                    "label": description,
+                    "fees": "0.00",
+                    "amount_received": str(amount),
+                    "date_payment": date.isoformat() if isinstance(date, datetime) else datetime.strptime(str(date).strip(), "%m/%d/%Y").isoformat(),
+                    "payment_origin": "Banque",
+                    "payer_ref": chf_id,
+                })
+                total_kmf += amount
             except Exception as e:
                 print(f"Erreur à la ligne {row_idx}: {row} - {e}")
                 continue
@@ -676,7 +675,7 @@ class BankImportService:
 
                 try:
                     credit_val = row[credit_idx]
-                    if credit_val and Decimal(credit_val) > 0:
+                    if credit_val is not None:
                         ref = str(row[reference_idx]) if row[reference_idx] else f"ref_{uuid4()}"
                         date_str = row[date_idx]
                         if isinstance(date_str, datetime):
@@ -738,7 +737,7 @@ class BankImportService:
 
                 try:
                     credit_val = row[credit_idx]
-                    if credit_val and Decimal(credit_val) > 0:
+                    if credit_val is not None:
                         ref = str(row[reference_idx]) if row[reference_idx] else f"ref_{uuid4()}"
                         date_str = row[date_idx]
                         payment_source = str(row[payment_source_idx]).upper()
@@ -815,6 +814,45 @@ class BankImportService:
         except Insuree.DoesNotExist:
             return None
 
+
+    def valider_paiement_factures(self, factures, montant_paye):
+        """
+        Vérifie si `montant_paye` permet de payer les factures
+        une à une dans l'ordre, sans paiement partiel.
+
+        - factures : liste des facturees
+        - montant_paye : montant total payé par l'utilisateur
+
+        Retourne la liste des factures couvertes si OK, lève une exception sinon.
+        """
+        restant = montant_paye
+        factures_couvertes = []
+
+        for facture in factures:
+            montant = facture.amount_total
+
+            if restant == 0:
+                # Plus rien à payer, on s'arrête
+                break
+
+            if restant < montant:
+                raise Exception(
+                    f"Paiement partiel non autorisé : la facture {facture.code} est de {montant} KMF "
+                    f"mais le montant disponible n'est que de {restant} KMF (il manque {montant - restant} KMF)."
+                )
+
+            restant -= montant
+            factures_couvertes.append(facture)
+
+        if restant > 0:
+            raise Exception(
+                f"Trop perçu : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
+                f"il reste un excédent de {restant} KMF."
+            )
+
+        return factures_couvertes
+
+
     def reconcile_bank_transaction(self, tx):
         chf_id = tx["insuree_chf_id"]
         return_result = []
@@ -887,7 +925,6 @@ class BankImportService:
         if not policy:
             raise Exception("Aucune police en attente, expirée ou active n'a été trouvée pour la famille dont vous souhaitez effectuer le paiement.")
         family_amount = 0
-        amount_paid = 0
         government_amount = 0
         if policy.contribution_plan:
             if isinstance(policy.contribution_plan, (str, UUID)):
@@ -946,41 +983,29 @@ class BankImportService:
         logger.info("Montant a comparer %s", family_amount)
 
         amount_received = Decimal(tx["amount_received"])
+        if amount_received <= 0:
+            raise Exception("Les montants inférieurs ou égaux à 0 ne sont pas autorisés.")
         # ---- Règle : montant non multiple -> erreur, rien n'est importé ----
         if family_amount <= 0:
             raise Exception(f"Montant de cotisation introuvable pour la police de l'assuré {chf_id}.")
         nb_periods, remainder = divmod(amount_received, family_amount)
         logger.info(" nb_periods = %s remainder = %s", nb_periods, remainder)
-        if remainder != 0 or nb_periods <= 0:
-            raise Exception(
-                f"Le montant reçu ({amount_received} KMF) n'est pas un "
-                f"multiple exact du montant de cotisation "
-                f"({family_amount} KMF) pour l'assuré {chf_id}."
-            )
 
-        amount_paid = amount_received / nb_periods
         # point de départ pour générer les prochaines périodes si besoin
         cursor_period_end = (
-            invoice.date_valid_to if invoice else None
+            invoice.date_valid_to if invoice else payment_date
+            #payment_date c'est la date qui est sur l'import
         )
-        logger.info("cursor_period_end = %s", cursor_period_end)
+        logger.info("cursor period end = %s", cursor_period_end)
+        logger.info("payment date inside import file %s", payment_date)
 
-        # Premiere boucle pour arreter au cas ou les montants ne sont pas tous correct
         all_invoices = self.find_invoice(chf_id, get_all_invoices=True)
-        for current_invoice in all_invoices:
-            if current_invoice.amount_total != family_amount:
-                raise Exception(
-                    f"La facture impayée {current_invoice.code} a un montant "
-                    f"({current_invoice.amount_total} KMF) différent du "
-                    f"montant de cotisation attendu "
-                    f"({family_amount} KMF)."
-                )
+        if invoice:
+            # Vérifier les montants si au moins une facture existe, sinon on créra la facture
+            results = self.valider_paiement_factures(all_invoices, amount_received)
         for _ in range(int(nb_periods)):
             invoice = self.find_invoice(chf_id)
             logger.info("Invoice found %s", invoice)
-            if invoice:
-                cursor_period_end = invoice.date_valid_to
-                logger.info("Invoice period end = %s", cursor_period_end)
             if not invoice:
                 # Plus de facture impayée -> génération d'une nouvelle période
                 invoice, cursor_period_end = self._generate_next_period_invoice(
@@ -1028,14 +1053,14 @@ class BankImportService:
                 message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
             )
 
-            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date())
+            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice)
             res = {
                 "invoice_code": invoice.code,
                 "payment_id": payment_invoice.id,
                 "detail_payment_id": detail_payment.id,
                 "premium_uuid": str(premium.uuid) if premium else None,
                 "status": "RECONCILIATED",
-                "amount": str(amount_paid),
+                "amount": str(invoice.amount_total),
             }
             return_result.append(res)
         return return_result
@@ -1176,7 +1201,7 @@ class BankImportService:
                 "date_valid_to": date_valid_to,
                 "amount_net": government_amount,
                 "amount_total": government_amount,
-                "status": Invoice.Status.RECONCILIATED,
+                "status": Invoice.Status.VALIDATED,
                 "cron_job_code": gov_code,
                 "subject_id": family.head_insuree.id,
                 "subject_type": "insuree",
@@ -1197,7 +1222,7 @@ class BankImportService:
                 "unit_price": government_amount / periodicity,
                 "amount_net": government_amount,
                 "amount_total": government_amount,
-                "cron_job_code": code
+                "cron_job_code": gov_code
             }
             result = invoice_line_item_service.create(
                 item_values
@@ -1205,7 +1230,7 @@ class BankImportService:
             logger.info("Invoice line gov_amount created %s", result)
         return new_invoice, date_valid_to
 
-    def create_premium(self, chf_id, data, code_tp, invoice_date_from):
+    def create_premium(self, chf_id, data, code_tp, invoice):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True)
             family = Family.objects.get(head_insuree=insuree, validity_to__isnull=True)
@@ -1233,7 +1258,7 @@ class BankImportService:
                     logger.info(f"Contribution créée avec succès pour police: {policy.id}")
                     policy_status_premium_paid(
                         policy,
-                        invoice_date_from
+                        invoice.date_valid_from.date()
                     )
                     policy.save()
                     return created
@@ -1243,15 +1268,15 @@ class BankImportService:
                     logger.info("Police %s encore active, on étend la date d'expiration", policy.id)
                     # Calcul de la date d'expiration en fonction de la périodicité
                     if policy.periodicity == Policy.MONTHLY:
-                        base_expiry= policy.expiry_date + relativedelta(months=1)
+                        base_expiry= invoice.date_valid_from.date() + relativedelta(months=1)
                     elif policy.periodicity == Policy.QUARTERLY:
-                        base_expiry = policy.expiry_date + relativedelta(months=3)
+                        base_expiry = invoice.date_valid_from.date() + relativedelta(months=3)
                     elif policy.periodicity == Policy.SEMESTER:
-                        base_expiry = policy.expiry_date + relativedelta(months=6)
+                        base_expiry = invoice.date_valid_from.date() + relativedelta(months=6)
                     elif policy.periodicity == Policy.YEARLY:
-                        base_expiry = policy.expiry_date + relativedelta(years=1)
+                        base_expiry = invoice.date_valid_from.date() + relativedelta(years=1)
                     else:
-                        base_expiry = policy.expiry_date + relativedelta(months=1)
+                        base_expiry = invoice.date_valid_from.date() + relativedelta(months=1)
 
                     product = policy.product
                     grace_days = (product.grace_period_payment or 0) * 30
@@ -1269,7 +1294,7 @@ class BankImportService:
                         product=policy.product,
                         status=Policy.STATUS_IDLE,
                         stage=Policy.STAGE_RENEWED,
-                        start_date=invoice_date_from,
+                        start_date=invoice.date_valid_from.date(),
                         enroll_date=policy.enroll_date,
                         value=policy.value,
                         signature_date=policy.signature_date,
@@ -1281,11 +1306,11 @@ class BankImportService:
                         validity_from=TimeUtils.now()
                     )
                     new_policy.save()
-                    logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={invoice_date_from}")
+                    logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={invoice.date_valid_from.date()}")
 
                     policy.stage = Policy.STAGE_RENEWED
                     policy.save()
-                    logger.info(f"Ancienne police {policy.id} marquée comme renouvelée et desactivée")
+                    logger.info(f"Ancienne police {policy.id} marquée comme renouvelée")
 
                     update_insuree_policies(new_policy, self._user.id)
                     premium_data = {
@@ -1302,7 +1327,7 @@ class BankImportService:
                     logger.info(f"Contribution créée avec succès pour la nouvelle police: {new_policy.id}")
                     policy_status_premium_paid(
                         new_policy,
-                        invoice_date_from
+                        invoice.date_valid_from.date()
                     )
                     logger.info("Comparaison de date apres recalcul %s et la date du jour %s police traité", new_policy.expiry_date, py_datetime.today().date())
                     if new_policy.expiry_date < py_datetime.today().date():
