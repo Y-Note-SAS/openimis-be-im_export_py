@@ -1090,7 +1090,8 @@ class BankImportService:
             existing_invoices = Invoice.objects.filter(
                 subject_id=family.head_insuree.id,
                 date_valid_from__date__gte=date_due,
-                is_deleted=False
+                is_deleted=False,
+                thirdparty_type=73
             ).exclude(status=Invoice.Status.CANCELLED)
         logger.info("existing invoices %s ", existing_invoices)
         if existing_invoices:
