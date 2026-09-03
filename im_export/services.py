@@ -860,19 +860,6 @@ class BankImportService:
             )
 
         invoice = self.find_invoice(chf_id)
-        if not invoice:
-            raise Exception(f"Aucune facture trouvée pour le numéro d'assuré {chf_id}")
-
-        if invoice.status in [Invoice.Status.PAID, Invoice.Status.CANCELLED]:
-            raise Exception(f"Facture déjà payée ou annulée: {invoice.code}")
-        
-        amount_received = Decimal(tx["amount_received"])
-        if amount_received <= 0:
-            raise Exception("Les montants inférieurs ou égaux à 0 ne sont pas autorisés.")
-        if amount_received != invoice.amount_total:
-            raise Exception(
-                f"Montant du paiement ({amount_received} KMF) différent du montant de la facture ({invoice.amount_total} KMF)"
-            )
 
         payment_date = tx.get("date")
         if not payment_date:
@@ -899,7 +886,6 @@ class BankImportService:
         if not policy:
             raise Exception("Aucune police en attente, expirée ou active n'a été trouvée pour la famille dont vous souhaitez effectuer le paiement.")
         family_amount = 0
-        amount_paid = 0
         government_amount = 0
         if policy.contribution_plan:
             if isinstance(policy.contribution_plan, (str, UUID)):
@@ -958,41 +944,29 @@ class BankImportService:
         logger.info("Montant a comparer %s", family_amount)
 
         amount_received = Decimal(tx["amount_received"])
+        if amount_received <= 0:
+            raise Exception("Les montants inférieurs ou égaux à 0 ne sont pas autorisés.")
         # ---- Règle : montant non multiple -> erreur, rien n'est importé ----
         if family_amount <= 0:
             raise Exception(f"Montant de cotisation introuvable pour la police de l'assuré {chf_id}.")
         nb_periods, remainder = divmod(amount_received, family_amount)
         logger.info(" nb_periods = %s remainder = %s", nb_periods, remainder)
-        if remainder != 0 or nb_periods <= 0:
-            raise Exception(
-                f"Le montant reçu ({amount_received} KMF) n'est pas un "
-                f"multiple exact du montant de cotisation "
-                f"({family_amount} KMF) pour l'assuré {chf_id}."
-            )
 
-        amount_paid = amount_received / nb_periods
         # point de départ pour générer les prochaines périodes si besoin
         cursor_period_end = (
-            invoice.date_valid_to if invoice else None
+            invoice.date_valid_to if invoice else payment_date
+            #payment_date c'est la date qui est sur l'import
         )
-        logger.info("cursor_period_end = %s", cursor_period_end)
+        logger.info("cursor period end = %s", cursor_period_end)
+        logger.info("payment date inside import file %s", payment_date)
 
-        # Premiere boucle pour arreter au cas ou les montants ne sont pas tous correct
         all_invoices = self.find_invoice(chf_id, get_all_invoices=True)
-        for current_invoice in all_invoices:
-            if current_invoice.amount_total != family_amount:
-                raise Exception(
-                    f"La facture impayée {current_invoice.code} a un montant "
-                    f"({current_invoice.amount_total} KMF) différent du "
-                    f"montant de cotisation attendu "
-                    f"({family_amount} KMF)."
-                )
+        if invoice:
+            # Vérifier les montants si au moins une facture existe, sinon on créra la facture
+            results = self.valider_paiement_factures(all_invoices, amount_received)
         for _ in range(int(nb_periods)):
             invoice = self.find_invoice(chf_id)
             logger.info("Invoice found %s", invoice)
-            if invoice:
-                cursor_period_end = invoice.date_valid_to
-                logger.info("Invoice period end = %s", cursor_period_end)
             if not invoice:
                 # Plus de facture impayée -> génération d'une nouvelle période
                 invoice, cursor_period_end = self._generate_next_period_invoice(
@@ -1040,14 +1014,14 @@ class BankImportService:
                 message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
             )
 
-            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice.date_valid_from.date())
+            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice)
             res = {
                 "invoice_code": invoice.code,
                 "payment_id": payment_invoice.id,
                 "detail_payment_id": detail_payment.id,
                 "premium_uuid": str(premium.uuid) if premium else None,
                 "status": "RECONCILIATED",
-                "amount": str(amount_paid),
+                "amount": str(invoice.amount_total),
             }
             return_result.append(res)
         return return_result
@@ -1120,7 +1094,18 @@ class BankImportService:
             ).exclude(status=Invoice.Status.CANCELLED)
         logger.info("existing invoices %s ", existing_invoices)
         if existing_invoices:
-            return existing_invoices.first(), existing_invoices.first().date_valid_to
+            for inv in existing_invoices:
+                if inv.status == Invoice.Status.PAID:
+                    return inv, inv.date_valid_to
+            return self._generate_next_period_invoice(
+                family,
+                family_amount,
+                government_amount,
+                existing_invoices.first().date_valid_to,
+                payment_day,
+                period,
+                payment_date
+            )
 
         base_code = f"{family.head_insuree.chf_id}_{date_due.strftime('%Y%m')}"
         timestamp = py_datetime.now().strftime('%Y%m%d%H%M%S%f')
@@ -1188,7 +1173,7 @@ class BankImportService:
                 "date_valid_to": date_valid_to,
                 "amount_net": government_amount,
                 "amount_total": government_amount,
-                "status": Invoice.Status.RECONCILIATED,
+                "status": Invoice.Status.VALIDATED,
                 "cron_job_code": gov_code,
                 "subject_id": family.head_insuree.id,
                 "subject_type": "insuree",
@@ -1209,14 +1194,13 @@ class BankImportService:
                 "unit_price": government_amount / periodicity,
                 "amount_net": government_amount,
                 "amount_total": government_amount,
-                "cron_job_code": code
+                "cron_job_code": gov_code
             }
             result = invoice_line_item_service.create(
                 item_values
             )
             logger.info("Invoice line gov_amount created %s", result)
         return new_invoice, date_valid_to
-
 
     def create_premium(self, chf_id, data, code_tp, invoice):
         try:
@@ -1297,7 +1281,6 @@ class BankImportService:
                     logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={invoice.date_valid_from.date()}")
 
                     policy.stage = Policy.STAGE_RENEWED
-                    policy.validity_to = timezone.now()
                     policy.save()
                     logger.info(f"Ancienne police {policy.id} marquée comme renouvelée")
 
@@ -1306,7 +1289,7 @@ class BankImportService:
                         "audit_user_id": self._user.id,
                         "receipt": f"receipt_{uuid4()}",
                         "pay_date": data.date_payment,
-                        "pay_type": "B",
+                        "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
                         "is_photo_fee": False,
                         "amount": data.amount_received,
                         "policy": new_policy
