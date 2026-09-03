@@ -1129,12 +1129,13 @@ class BankImportService:
             existing_invoices = Invoice.objects.filter(
                 subject_id=family.head_insuree.id,
                 date_valid_from__date__gte=date_due,
-                is_deleted=False
+                is_deleted=False,
+                thirdparty_type=73
             ).exclude(status=Invoice.Status.CANCELLED)
         logger.info("existing invoices %s ", existing_invoices)
         if existing_invoices:
             for inv in existing_invoices:
-                if inv.status == Invoice.Status.PAID:
+                if inv.status == Invoice.Status.VALIDATED:
                     return inv, inv.date_valid_to
             return self._generate_next_period_invoice(
                 family,
