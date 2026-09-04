@@ -1129,7 +1129,7 @@ class BankImportService:
                 subject_id=family.head_insuree.id,
                 date_valid_from__date__gte=date_due,
                 is_deleted=False,
-                thirdparty_type=73,
+                thirdparty_type=73, #filter only insuree invoices
                 date_valid_to__isnul=True
             ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
         logger.info("existing invoices:: %s ", existing_invoices)
