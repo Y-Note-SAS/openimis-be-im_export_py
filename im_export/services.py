@@ -1131,21 +1131,23 @@ class BankImportService:
                 date_valid_from__date__gte=date_due,
                 is_deleted=False,
                 thirdparty_type=73
-            ).exclude(status=Invoice.Status.CANCELLED)
+            ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
         logger.info("existing invoices %s ", existing_invoices)
         if existing_invoices:
             for inv in existing_invoices:
                 if inv.status == Invoice.Status.VALIDATED:
                     return inv, inv.date_valid_to
-            return self._generate_next_period_invoice(
-                family,
-                family_amount,
-                government_amount,
-                existing_invoices.first().date_valid_to,
-                payment_day,
-                period,
-                payment_date
-            )
+            next_date_due = existing_invoices.first().date_valid_to
+            if next_date_due and next_date_due > date_due:
+                return self._generate_next_period_invoice(
+                    family,
+                    family_amount,
+                    government_amount,
+                    existing_invoices.first().date_valid_to,
+                    payment_day,
+                    period,
+                    payment_date
+                )
 
         base_code = f"{family.head_insuree.chf_id}_{date_due.strftime('%Y%m')}"
         timestamp = py_datetime.now().strftime('%Y%m%d%H%M%S%f')
