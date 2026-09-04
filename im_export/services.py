@@ -1,7 +1,6 @@
 import logging
 from typing import Tuple, Any, Dict, List
 from tablib import Dataset
-
 from im_export.resources import InsureeResource
 import openpyxl
 from decimal import Decimal
