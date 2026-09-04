@@ -21,8 +21,7 @@ from django.db.models import Q
 from datetime import datetime as py_datetime, date as py_date
 from core.datetimes.shared import datetimedelta
 from contribution_plan.models import ContributionPlan
-from django.db import transaction 
-from django.utils import timezone
+from django.db import transaction
 from datetime import timedelta
 from core.utils import TimeUtils
 from product.models import Product
