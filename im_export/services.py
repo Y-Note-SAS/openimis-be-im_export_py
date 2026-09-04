@@ -1123,7 +1123,7 @@ class BankImportService:
         )
         date_valid_to = date_to - timedelta(days=1)
         logger.info("current date_valid_to %s", date_valid_to)
-        existing_invoices = False
+        existing_invoices = []
         if family.head_insuree:
             existing_invoices = Invoice.objects.filter(
                 subject_id=family.head_insuree.id,
