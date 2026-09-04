@@ -1132,7 +1132,7 @@ class BankImportService:
                 is_deleted=False,
                 thirdparty_type=73
             ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
-        logger.info("existing invoices %s ", existing_invoices)
+        logger.info("existing invoices:: %s ", existing_invoices)
         if existing_invoices:
             for inv in existing_invoices:
                 if inv.status == Invoice.Status.VALIDATED:
