@@ -1104,7 +1104,7 @@ class BankImportService:
         period_start = (
             period_start + timedelta(days=1) if period_start else datetime.now().date()
         )
-        logger.info("current period_start %s", period_start)
+        logger.info("current period_start: %s", period_start)
         date_due = self.calculate_due_date(period_start, payment_day)
         logger.info("date due : %s", date_due)
         date_due = date_due.replace(day=payment_day)
