@@ -1100,7 +1100,7 @@ class BankImportService:
 
     def _generate_next_period_invoice(self, family, family_amount, government_amount, period_start, payment_day, period, payment_date):
         """
-        Génère la facture "Cotisant" et "Etat" pour la prochaine période
+            Génère la facture "Cotisant" et "Etat" pour la prochaine période
         """
         period_start = (
             period_start + timedelta(days=1) if period_start else datetime.now().date()
