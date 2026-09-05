@@ -39,6 +39,7 @@ from policyholder.models import PolicyHolder
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
+THIRDPARTY_TYPE_INSUREE = 73
 
 
 class InsureeImportExportService:
@@ -1128,10 +1129,13 @@ class BankImportService:
                 subject_id=family.head_insuree.id,
                 date_valid_from__date__gte=date_due,
                 is_deleted=False,
-                thirdparty_type=73, #filter only insuree invoices
+                thirdparty_type=THIRDPARTY_TYPE_INSUREE, #filter only insuree invoices
                 date_valid_to__isnul=True
             ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
-        logger.info("existing invoices:: %s ", existing_invoices)
+        logger.info(
+            "existing invoices %s for thisd party type %s",
+            existing_invoices, THIRDPARTY_TYPE_INSUREE
+        )
         if existing_invoices:
             for inv in existing_invoices:
                 if inv.status == Invoice.Status.VALIDATED:
