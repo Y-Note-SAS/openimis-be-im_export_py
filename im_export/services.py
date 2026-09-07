@@ -1,7 +1,6 @@
 import logging
 from typing import Tuple, Any, Dict, List
 from tablib import Dataset
-
 from im_export.resources import InsureeResource
 import openpyxl
 from decimal import Decimal
@@ -22,8 +21,7 @@ from django.db.models import Q
 from datetime import datetime as py_datetime, date as py_date
 from core.datetimes.shared import datetimedelta
 from contribution_plan.models import ContributionPlan
-from django.db import transaction 
-from django.utils import timezone
+from django.db import transaction
 from datetime import timedelta
 from core.utils import TimeUtils
 from product.models import Product
@@ -41,6 +39,7 @@ from policyholder.models import PolicyHolder
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
+THIRDPARTY_TYPE_INSUREE = 73
 
 
 class InsureeImportExportService:
@@ -1101,12 +1100,12 @@ class BankImportService:
 
     def _generate_next_period_invoice(self, family, family_amount, government_amount, period_start, payment_day, period, payment_date):
         """
-        Génère la facture "Cotisant" et "Etat" pour la prochaine période
+            Génère la facture "Cotisant" et "Etat" pour la prochaine période
         """
         period_start = (
             period_start + timedelta(days=1) if period_start else datetime.now().date()
         )
-        logger.info("current period_start %s", period_start)
+        logger.info("current period_start: %s", period_start)
         date_due = self.calculate_due_date(period_start, payment_day)
         logger.info("date due : %s", date_due)
         date_due = date_due.replace(day=payment_day)
@@ -1124,16 +1123,36 @@ class BankImportService:
         )
         date_valid_to = date_to - timedelta(days=1)
         logger.info("current date_valid_to %s", date_valid_to)
-        existing_invoices = False
+        existing_invoices = []
         if family.head_insuree:
             existing_invoices = Invoice.objects.filter(
                 subject_id=family.head_insuree.id,
                 date_valid_from__date__gte=date_due,
-                is_deleted=False
-            ).exclude(status=Invoice.Status.CANCELLED)
-        logger.info("existing invoices %s ", existing_invoices)
+                is_deleted=False,
+                thirdparty_type=THIRDPARTY_TYPE_INSUREE, #filter only insuree invoices
+            ).filter(
+                Q(date_valid_to__isnull=True) |
+                Q(date_valid_to__date__gte=py_datetime.today().date())
+            ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
+        logger.info(
+            "existing invoices %s for thisd party type %s",
+            existing_invoices, THIRDPARTY_TYPE_INSUREE
+        )
         if existing_invoices:
-            return existing_invoices.first(), existing_invoices.first().date_valid_to
+            for inv in existing_invoices:
+                if inv.status == Invoice.Status.VALIDATED:
+                    return inv, inv.date_valid_to
+            next_date_due = existing_invoices.first().date_valid_to
+            if next_date_due and next_date_due > date_due:
+                return self._generate_next_period_invoice(
+                    family,
+                    family_amount,
+                    government_amount,
+                    existing_invoices.first().date_valid_to,
+                    payment_day,
+                    period,
+                    payment_date
+                )
 
         base_code = f"{family.head_insuree.chf_id}_{date_due.strftime('%Y%m')}"
         timestamp = py_datetime.now().strftime('%Y%m%d%H%M%S%f')
