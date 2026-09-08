@@ -1023,6 +1023,15 @@ class BankImportService:
         nombre_facture = len(all_invoices) if all_invoices else int(nb_periods)
         if covered_invoices:
             nombre_facture = len(covered_invoices) + remaining_periods
+        logger.info("covered_invoices %s", covered_invoices)
+        logger.info("remaining_periods %s", remaining_periods)
+        logger.info("nombre de factures a créer %s ", nombre_facture)
+        if not covered_invoices:
+            if remainder != 0:
+                raise Exception(
+                    f"Trop perçu non autorisé : il y'a un excédent de {remainder} KMF. "
+                    f"L'excédent doit être un multiple du montant de la police."
+                )
         for _ in range(nombre_facture):
             invoice = self.find_invoice(chf_id)
             logger.info("Invoice found %s", invoice)
