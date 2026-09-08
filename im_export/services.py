@@ -41,6 +41,7 @@ from policyholder.models import PolicyHolder
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
+THIRDPARTY_TYPE_INSUREE = 73
 
 
 class InsureeImportExportService:
@@ -787,6 +788,7 @@ class BankImportService:
 
         Retourne la liste des factures couvertes si OK, lève une exception sinon.
         """
+        nb_future_periods = 0
         restant = montant_paye
         factures_couvertes = []
 
@@ -807,12 +809,20 @@ class BankImportService:
             factures_couvertes.append(facture)
 
         if restant > 0:
-            raise Exception(
-                f"Trop perçu : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
-                f"il reste un excédent de {restant} KMF."
-            )
+            if factures_couvertes:
+                derniere_facture = factures_couvertes[-1]
+                if restant % derniere_facture.amount_total != 0:
+                    raise Exception(
+                        f"Trop perçu non autorisé : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
+                        f"il reste un excédent de {restant} KMF. "
+                        f"L'excédent doit être un multiple de {derniere_facture.amount_total} KMF "
+                        f"(montant de la dernière facture couverte)."
+                    )
+                # Nombre de périodes futures (prépaiement)
+                nb_future_periods = restant // derniere_facture.amount_total
+                logger.info("Excédent : %s KMF -> %s périodes futures", restant, nb_future_periods)
 
-        return factures_couvertes
+        return factures_couvertes, int(nb_future_periods)
 
 
     def reconcile_bank_transaction(self, tx):
@@ -880,6 +890,7 @@ class BankImportService:
         fees = Decimal(tx.get("fees", "0.00"))
         payment_origin = tx.get("payment_origin") or "Banque"
         payer_ref = tx.get("payer_ref") or chf_id
+
         policy = policies.filter(
             status__in=[Policy.STATUS_IDLE, Policy.STATUS_EXPIRED, Policy.STATUS_ACTIVE]
         ).order_by("-validity_from").first()
@@ -951,6 +962,11 @@ class BankImportService:
             raise Exception(f"Montant de cotisation introuvable pour la police de l'assuré {chf_id}.")
         nb_periods, remainder = divmod(amount_received, family_amount)
         logger.info(" nb_periods = %s remainder = %s", nb_periods, remainder)
+        if nb_periods < 1:
+            raise Exception(
+                f"Montant reçu ({amount_received}) inférieur au montant de cotisation "
+                f"({family_amount}) pour l'assuré {chf_id}."
+            )
 
         # point de départ pour générer les prochaines périodes si besoin
         cursor_period_end = (
@@ -961,10 +977,25 @@ class BankImportService:
         logger.info("payment date inside import file %s", payment_date)
 
         all_invoices = self.find_invoice(chf_id, get_all_invoices=True)
+        covered_invoices = []
+        remaining_periods = 0
         if invoice:
             # Vérifier les montants si au moins une facture existe, sinon on créra la facture
-            results = self.valider_paiement_factures(all_invoices, amount_received)
-        for _ in range(int(nb_periods)):
+            covered_invoices, remaining_periods = self.valider_paiement_factures(
+                all_invoices, amount_received)
+        nombre_facture = len(all_invoices) if all_invoices else int(nb_periods)
+        if covered_invoices:
+            nombre_facture = len(covered_invoices) + remaining_periods
+        logger.info("covered_invoices %s", covered_invoices)
+        logger.info("remaining_periods %s", remaining_periods)
+        logger.info("nombre de factures a créer %s ", nombre_facture)
+        if not covered_invoices:
+            if remainder != 0:
+                raise Exception(
+                    f"Trop perçu non autorisé : il y'a un excédent de {remainder} KMF. "
+                    f"L'excédent doit être un multiple du montant de la police."
+                )
+        for _ in range(nombre_facture):
             invoice = self.find_invoice(chf_id)
             logger.info("Invoice found %s", invoice)
             if not invoice:
@@ -1062,12 +1093,12 @@ class BankImportService:
 
     def _generate_next_period_invoice(self, family, family_amount, government_amount, period_start, payment_day, period, payment_date):
         """
-        Génère la facture "Cotisant" et "Etat" pour la prochaine période
+            Génère la facture "Cotisant" et "Etat" pour la prochaine période
         """
         period_start = (
             period_start + timedelta(days=1) if period_start else datetime.now().date()
         )
-        logger.info("current period_start %s", period_start)
+        logger.info("current period_start: %s", period_start)
         date_due = self.calculate_due_date(period_start, payment_day)
         logger.info("date due : %s", date_due)
         date_due = date_due.replace(day=payment_day)
@@ -1085,28 +1116,36 @@ class BankImportService:
         )
         date_valid_to = date_to - timedelta(days=1)
         logger.info("current date_valid_to %s", date_valid_to)
-        existing_invoices = False
+        existing_invoices = []
         if family.head_insuree:
             existing_invoices = Invoice.objects.filter(
                 subject_id=family.head_insuree.id,
                 date_valid_from__date__gte=date_due,
                 is_deleted=False,
-                thirdparty_type=73
-            ).exclude(status=Invoice.Status.CANCELLED)
-        logger.info("existing invoices %s ", existing_invoices)
+                thirdparty_type=THIRDPARTY_TYPE_INSUREE, #filter only insuree invoices
+            ).filter(
+                Q(date_valid_to__isnull=True) |
+                Q(date_valid_to__date__gte=py_datetime.today().date())
+            ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
+        logger.info(
+            "existing invoices %s for third party type %s",
+            existing_invoices, THIRDPARTY_TYPE_INSUREE
+        )
         if existing_invoices:
             for inv in existing_invoices:
                 if inv.status == Invoice.Status.VALIDATED:
                     return inv, inv.date_valid_to
-            return self._generate_next_period_invoice(
-                family,
-                family_amount,
-                government_amount,
-                existing_invoices.first().date_valid_to,
-                payment_day,
-                period,
-                payment_date
-            )
+            next_date_due = existing_invoices.first().date_valid_to
+            if next_date_due and next_date_due > date_due:
+                return self._generate_next_period_invoice(
+                    family,
+                    family_amount,
+                    government_amount,
+                    existing_invoices.first().date_valid_to,
+                    payment_day,
+                    period,
+                    payment_date
+                )
 
         base_code = f"{family.head_insuree.chf_id}_{date_due.strftime('%Y%m')}"
         timestamp = py_datetime.now().strftime('%Y%m%d%H%M%S%f')
@@ -1211,7 +1250,7 @@ class BankImportService:
                 family=family, validity_to__isnull=True
             ).exclude(
                 status__in=[Policy.STATUS_SUSPENDED, Policy.STATUS_READY]
-            ).order_by("start_date").first()
+            ).order_by("-start_date").first()
 
             if policy:
                 # Si la police n'est pas encore expirée, on la mets a jour (expiry date) et
@@ -1308,8 +1347,15 @@ class BankImportService:
                         # afin de ne pas manquer une période non payée
                         logger.info("La police est quand meme expirée")
                         new_policy.status = Policy.STATUS_EXPIRED
+                    if policy.effective_date:
+                        logger.info(
+                            "La nouvelle police prend l'ancienne date d'efet %s",
+                            policy.effective_date
+                        )
+                        new_policy.effective_date = policy.effective_date
                     new_policy.save()
             else:
                 logger.warning(f"Aucune police active trouvée pour la famille {family.id}")
         except Exception as e:
             logger.exception(f"Erreur lors de la création de contribution pour le numéro d'assuré {chf_id}: {e}")
+
