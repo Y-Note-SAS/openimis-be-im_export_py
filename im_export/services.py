@@ -858,7 +858,7 @@ class BankImportService:
                 nb_future_periods = restant // derniere_facture.amount_total
                 logger.info("Excédent : %s KMF -> %s périodes futures", restant, nb_future_periods)
 
-        return factures_couvertes, nb_future_periods
+        return factures_couvertes, int(nb_future_periods)
 
 
     def reconcile_bank_transaction(self, tx):
@@ -1017,7 +1017,6 @@ class BankImportService:
         remaining_periods = 0
         if invoice:
             # Vérifier les montants si au moins une facture existe, sinon on créra la facture
-            # results = self.valider_paiement_factures(all_invoices, amount_received)
             covered_invoices, remaining_periods = self.valider_paiement_factures(
                 all_invoices, amount_received)
         nombre_facture = len(all_invoices) if all_invoices else int(nb_periods)
