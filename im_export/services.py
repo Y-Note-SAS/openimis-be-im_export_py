@@ -824,6 +824,7 @@ class BankImportService:
 
         Retourne la liste des factures couvertes si OK, lève une exception sinon.
         """
+        nb_future_periods = 0
         restant = montant_paye
         factures_couvertes = []
 
@@ -853,8 +854,11 @@ class BankImportService:
                         f"L'excédent doit être un multiple de {derniere_facture.amount_total} KMF "
                         f"(montant de la dernière facture couverte)."
                     )
+                # Nombre de périodes futures (prépaiement)
+                nb_future_periods = restant // derniere_facture.amount_total
+                logger.info("Excédent : %s KMF -> %s périodes futures", restant, nb_future_periods)
 
-        return factures_couvertes
+        return factures_couvertes, nb_future_periods
 
 
     def reconcile_bank_transaction(self, tx):
@@ -1009,10 +1013,17 @@ class BankImportService:
         logger.info("payment date inside import file %s", payment_date)
 
         all_invoices = self.find_invoice(chf_id, get_all_invoices=True)
+        covered_invoices = []
+        remaining_periods = 0
         if invoice:
             # Vérifier les montants si au moins une facture existe, sinon on créra la facture
-            results = self.valider_paiement_factures(all_invoices, amount_received)
-        for _ in range(int(nb_periods)):
+            # results = self.valider_paiement_factures(all_invoices, amount_received)
+            covered_invoices, remaining_periods = self.valider_paiement_factures(
+                all_invoices, amount_received)
+        nombre_facture = len(all_invoices) if all_invoices else int(nb_periods)
+        if covered_invoices:
+            nombre_facture = len(covered_invoices) + remaining_periods
+        for _ in range(nombre_facture):
             invoice = self.find_invoice(chf_id)
             logger.info("Invoice found %s", invoice)
             if not invoice:
