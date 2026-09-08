@@ -99,7 +99,7 @@ def import_exim_bank(request):
                         "payment_id": result["payment_id"],
                         "premium_uuid": result.get("premium_uuid"),
                         "status": result["status"],
-                        "complete": result.get("premium_uuid") is not None
+                        "complete": result.get("detail_payment_id") is not None
                     })
             except Exception as exc:
                 # Ajoute l'erreur avec l'index ou info utile pour retrouver la ligne
@@ -170,7 +170,7 @@ def import_bdc_bank(request):
                         "payment_id": result["payment_id"],
                         "premium_uuid": result.get("premium_uuid"),
                         "status": result["status"],
-                        "complete": result.get("premium_uuid") is not None
+                        "complete": result.get("detail_payment_id") is not None
                     })
             except Exception as exc:
                 chfid = tx.get("insuree_chf_id", "").strip()
@@ -243,7 +243,7 @@ def import_other_payment_method(request):
                         "payment_id": result["payment_id"],
                         "premium_uuid": result.get("premium_uuid"),
                         "status": result["status"],
-                        "complete": result.get("premium_uuid") is not None
+                        "complete": result.get("detail_payment_id") is not None
                     })
             except Exception as exc:
                 # Ajoute l'erreur avec l'index ou info utile pour retrouver la ligne

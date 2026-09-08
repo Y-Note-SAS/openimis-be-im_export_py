@@ -844,10 +844,15 @@ class BankImportService:
             factures_couvertes.append(facture)
 
         if restant > 0:
-            raise Exception(
-                f"Trop perçu : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
-                f"il reste un excédent de {restant} KMF."
-            )
+            if factures_couvertes:
+                derniere_facture = factures_couvertes[-1]
+                if restant % derniere_facture.amount_total != 0:
+                    raise Exception(
+                        f"Trop perçu non autorisé : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
+                        f"il reste un excédent de {restant} KMF. "
+                        f"L'excédent doit être un multiple de {derniere_facture.amount_total} KMF "
+                        f"(montant de la dernière facture couverte)."
+                    )
 
         return factures_couvertes
 
@@ -989,6 +994,11 @@ class BankImportService:
             raise Exception(f"Montant de cotisation introuvable pour la police de l'assuré {chf_id}.")
         nb_periods, remainder = divmod(amount_received, family_amount)
         logger.info(" nb_periods = %s remainder = %s", nb_periods, remainder)
+        if nb_periods < 1:
+            raise Exception(
+                f"Montant reçu ({amount_received}) inférieur au montant de cotisation "
+                f"({family_amount}) pour l'assuré {chf_id}."
+            )
 
         # point de départ pour générer les prochaines périodes si besoin
         cursor_period_end = (
@@ -1257,7 +1267,7 @@ class BankImportService:
                 family=family, validity_to__isnull=True
             ).exclude(
                 status__in=[Policy.STATUS_SUSPENDED, Policy.STATUS_READY]
-            ).order_by("start_date").first()
+            ).order_by("-start_date").first()
 
             if policy:
                 # Si la police n'est pas encore expirée, on la mets a jour (expiry date) et
@@ -1354,6 +1364,12 @@ class BankImportService:
                         # afin de ne pas manquer une période non payée
                         logger.info("La police est quand meme expirée")
                         new_policy.status = Policy.STATUS_EXPIRED
+                    if policy.effective_date:
+                        logger.info(
+                            "La nouvelle police prend l'ancienne date d'efet %s",
+                            policy.effective_date
+                        )
+                        new_policy.effective_date = policy.effective_date
                     new_policy.save()
             else:
                 logger.warning(f"Aucune police active trouvée pour la famille {family.id}")
