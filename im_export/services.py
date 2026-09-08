@@ -1156,7 +1156,7 @@ class BankImportService:
                 Q(date_valid_to__date__gte=py_datetime.today().date())
             ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
         logger.info(
-            "existing invoices %s for thisd party type %s",
+            "existing invoices %s for third party type %s",
             existing_invoices, THIRDPARTY_TYPE_INSUREE
         )
         if existing_invoices:
