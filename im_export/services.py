@@ -19,7 +19,7 @@ from contribution.services import update_or_create_premium
 from collections import defaultdict
 from location.models import Location
 from django.db.models import Q
-from datetime import datetime as py_datetime
+from datetime import datetime as py_datetime, date as py_date
 from core.datetimes.shared import datetimedelta
 from contribution_plan.models import ContributionPlan
 from django.db import transaction 
@@ -33,8 +33,15 @@ import copy
 from policy.services import update_insuree_policies
 from policy.services import policy_status_premium_paid
 from dateutil.relativedelta import relativedelta
+from invoice.services import InvoiceService
+from invoice.services.invoiceLineItem import InvoiceLineItemService
+import calendar
+from policy.apps import CALCULATION_RULES
+from policyholder.models import PolicyHolder
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
+THIRDPARTY_TYPE_INSUREE = 73
 
 
 class InsureeImportExportService:
@@ -750,16 +757,24 @@ class BankImportService:
             return Invoice.objects.get(code=code, is_deleted=False)
         except Invoice.DoesNotExist:
             return None
-        
-    def find_invoice(self, chf_id):
+
+    def find_invoice(self, chf_id, get_all_invoices=False):
         try:
             insuree = Insuree.objects.get(chf_id=chf_id, validity_to__isnull=True) 
+            if not get_all_invoices:
+                return Invoice.objects.filter(
+                    subject_id=str(insuree.id),
+                    status=Invoice.Status.VALIDATED,
+                    is_deleted=False,
+                    thirdparty_type=73
+                ).order_by("date_valid_from").first()
+            # Get all invoices
             return Invoice.objects.filter(
                 subject_id=str(insuree.id),
                 status=Invoice.Status.VALIDATED,
                 is_deleted=False,
                 thirdparty_type=73
-            ).order_by("date_valid_from").first()
+            ).order_by("date_valid_from").all()
         except Insuree.DoesNotExist:
             return None
 
@@ -773,6 +788,7 @@ class BankImportService:
 
         Retourne la liste des factures couvertes si OK, lève une exception sinon.
         """
+        nb_future_periods = 0
         restant = montant_paye
         factures_couvertes = []
 
@@ -793,16 +809,25 @@ class BankImportService:
             factures_couvertes.append(facture)
 
         if restant > 0:
-            raise Exception(
-                f"Trop perçu : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
-                f"il reste un excédent de {restant} KMF."
-            )
+            if factures_couvertes:
+                derniere_facture = factures_couvertes[-1]
+                if restant % derniere_facture.amount_total != 0:
+                    raise Exception(
+                        f"Trop perçu non autorisé : après avoir couvert toutes les {len(factures_couvertes)} facture(s), "
+                        f"il reste un excédent de {restant} KMF. "
+                        f"L'excédent doit être un multiple de {derniere_facture.amount_total} KMF "
+                        f"(montant de la dernière facture couverte)."
+                    )
+                # Nombre de périodes futures (prépaiement)
+                nb_future_periods = restant // derniere_facture.amount_total
+                logger.info("Excédent : %s KMF -> %s périodes futures", restant, nb_future_periods)
 
-        return factures_couvertes
+        return factures_couvertes, int(nb_future_periods)
 
 
     def reconcile_bank_transaction(self, tx):
         chf_id = tx["insuree_chf_id"]
+        return_result = []
         if not chf_id:
             raise Exception("Numéro d'assuré manquant")
         # 1. Récupération de l'assuré
@@ -845,19 +870,6 @@ class BankImportService:
             )
 
         invoice = self.find_invoice(chf_id)
-        if not invoice:
-            raise Exception(f"Aucune facture trouvée pour le numéro d'assuré {chf_id}")
-
-        if invoice.status in [Invoice.Status.PAID, Invoice.Status.CANCELLED]:
-            raise Exception(f"Facture déjà payée ou annulée: {invoice.code}")
-        
-        amount_received = Decimal(tx["amount_received"])
-        if amount_received <= 0:
-            raise Exception("Les montants inférieurs ou égaux à 0 ne sont pas autorisés.")
-        if amount_received != invoice.amount_total:
-            raise Exception(
-                f"Montant du paiement ({amount_received} KMF) différent du montant de la facture ({invoice.amount_total} KMF)"
-            )
 
         payment_date = tx.get("date")
         if not payment_date:
@@ -871,63 +883,364 @@ class BankImportService:
         except ValueError:
             raise Exception(f"Format de date non reconnu: {payment_date}")
 
-        subject_type = ContentType.objects.get_for_model(invoice) 
         code_ext = tx.get("code_ext") or f"pay_{uuid4()}"
         code_tp = tx.get("code_tp") or "Banque"
         code_receipt = tx.get("code_receipt") or f"receipt_{uuid4()}"
-        label = tx.get("label") or f"Paiement pour {invoice.code}"
         reconciliation_status = PaymentInvoice.ReconciliationStatus.RECONCILIATED
         fees = Decimal(tx.get("fees", "0.00"))
         payment_origin = tx.get("payment_origin") or "Banque"
         payer_ref = tx.get("payer_ref") or chf_id
 
-        payment_invoice = PaymentInvoice(
-            code_ext=code_ext,
-            code_tp=code_tp,
-            code_receipt=code_receipt,
-            label=label,
-            reconciliation_status=reconciliation_status,
-            amount_received=amount_received,
-            fees=fees,
-            date_payment=payment_date,
-            payment_origin=payment_origin,
-            payer_ref=payer_ref,
-            payer_name=payer_ref
-        )
-        payment_invoice.save(username=self._user.username)
+        policy = policies.filter(
+            status__in=[Policy.STATUS_IDLE, Policy.STATUS_EXPIRED, Policy.STATUS_ACTIVE]
+        ).order_by("-validity_from").first()
+        if not policy:
+            raise Exception("Aucune police en attente, expirée ou active n'a été trouvée pour la famille dont vous souhaitez effectuer le paiement.")
+        family_amount = 0
+        government_amount = 0
+        if policy.contribution_plan:
+            if isinstance(policy.contribution_plan, (str, UUID)):
+                contribution_plan_uuid = policy.contribution_plan
+            else:
+                contribution_plan_uuid = policy.contribution_plan.uuid
+            contribution_plan = ContributionPlan.objects.filter(
+                uuid=str(
+                    contribution_plan_uuid
+                )
+            ).first()
+            for calculation_rule in CALCULATION_RULES:
+                # get calculation_rule amount for government
+                result_signal = calculation_rule.signal_calculate_event.send(
+                    sender=contribution_plan.__class__.__name__, instance=contribution_plan,
+                    user=self._user, context="create",
+                    family=family,
+                    is_government_value=True
+                )
+                logger.info("result_signal %s ", result_signal)
+                if result_signal[0][1]:
+                    government_amount = Decimal(result_signal[0][1])
+                    logger.info("government_amount %s ", government_amount)
 
-        detail_payment = DetailPaymentInvoice(
-            payment=payment_invoice,
-            subject_type=subject_type,
-            subject_id=str(invoice.uuid),
-            status=DetailPaymentInvoice.DetailPaymentStatus.ACCEPTED,
-            fees=fees,
-            amount=amount_received,
-            reconcilation_id=f"recon_{uuid4()}",
-            reconcilation_date=payment_date,
-        )
-        detail_payment.save(username=self._user.username)
+                # get calculation_rule for familly
+                result_signal = calculation_rule.signal_calculate_event.send(
+                    sender=contribution_plan.__class__.__name__, instance=contribution_plan,
+                    user=self._user, context="create",
+                    family=family,
+                    is_government_value=False
+                )
+                logger.info("result_signal2 %s ", result_signal)
+                if result_signal[0][1]:
+                    family_amount = Decimal(result_signal[0][1])
+                    logger.info("family_amount = %s ", family_amount)
+        payment_day = policy.payment_day
+        periodicity = policy.periodicity
+        logger.info("payment_day =: %s", payment_day)
+        logger.info("periodicity = %s", periodicity)
+        qty = 1
+        if not periodicity:
+            periodicity = 'M'
+        if periodicity:
+            if periodicity == 'Q':
+                family_amount = family_amount * 3
+                qty = 3
+                government_amount = government_amount * 3
+            elif periodicity == 'S':
+                family_amount = family_amount * 6
+                government_amount = government_amount * 6
+                qty = 6
+            elif periodicity == 'Y':
+                family_amount = family_amount * 12
+                government_amount = government_amount * 12
+                qty = 12
+        logger.info("Montant a comparer %s", family_amount)
 
-        if invoice.status != Invoice.Status.RECONCILIATED:
-            invoice.status = Invoice.Status.RECONCILIATED
-            invoice.date_payed = payment_invoice.date_payment
-            invoice.save(username=self._user.username)
-        self.log_invoice_event(
-            user=self._user,
-            invoice=invoice,
-            event_type=InvoiceEvent.EventType.PAYMENT,
-            message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
+        amount_received = Decimal(tx["amount_received"])
+        if amount_received <= 0:
+            raise Exception("Les montants inférieurs ou égaux à 0 ne sont pas autorisés.")
+        # ---- Règle : montant non multiple -> erreur, rien n'est importé ----
+        if family_amount <= 0:
+            raise Exception(f"Montant de cotisation introuvable pour la police de l'assuré {chf_id}.")
+        nb_periods, remainder = divmod(amount_received, family_amount)
+        logger.info(" nb_periods = %s remainder = %s", nb_periods, remainder)
+        if nb_periods < 1:
+            raise Exception(
+                f"Montant reçu ({amount_received}) inférieur au montant de cotisation "
+                f"({family_amount}) pour l'assuré {chf_id}."
+            )
+
+        # point de départ pour générer les prochaines périodes si besoin
+        cursor_period_end = (
+            invoice.date_valid_to if invoice else payment_date
+            #payment_date c'est la date qui est sur l'import
         )
+        logger.info("cursor period end = %s", cursor_period_end)
+        logger.info("payment date inside import file %s", payment_date)
+
+        all_invoices = self.find_invoice(chf_id, get_all_invoices=True)
+        covered_invoices = []
+        remaining_periods = 0
+        if invoice:
+            # Vérifier les montants si au moins une facture existe, sinon on créra la facture
+            covered_invoices, remaining_periods = self.valider_paiement_factures(
+                all_invoices, amount_received)
+        nombre_facture = len(all_invoices) if all_invoices else int(nb_periods)
+        if covered_invoices:
+            nombre_facture = len(covered_invoices) + remaining_periods
+        logger.info("covered_invoices %s", covered_invoices)
+        logger.info("remaining_periods %s", remaining_periods)
+        logger.info("nombre de factures a créer %s ", nombre_facture)
+        if not covered_invoices:
+            if remainder != 0:
+                raise Exception(
+                    f"Trop perçu non autorisé : il y'a un excédent de {remainder} KMF. "
+                    f"L'excédent doit être un multiple du montant de la police."
+                )
+        for _ in range(nombre_facture):
+            invoice = self.find_invoice(chf_id)
+            logger.info("Invoice found %s", invoice)
+            if not invoice:
+                # Plus de facture impayée -> génération d'une nouvelle période
+                invoice, cursor_period_end = self._generate_next_period_invoice(
+                    family, family_amount, government_amount, cursor_period_end,
+                    payment_day, periodicity, payment_date
+                )
+
+            subject_type = ContentType.objects.get_for_model(invoice)
+            label = tx.get("label") or f"Paiement pour {invoice.code}"
+            payment_invoice = PaymentInvoice(
+                code_ext=code_ext,
+                code_tp=code_tp,
+                code_receipt=code_receipt,
+                label=label,
+                reconciliation_status=reconciliation_status,
+                amount_received=family_amount,
+                fees=fees,
+                date_payment=payment_date,
+                payment_origin=payment_origin,
+                payer_ref=payer_ref,
+                payer_name=payer_ref
+            )
+            payment_invoice.save(username=self._user.username)
+
+            detail_payment = DetailPaymentInvoice(
+                payment=payment_invoice,
+                subject_type=subject_type,
+                subject_id=str(invoice.uuid),
+                status=DetailPaymentInvoice.DetailPaymentStatus.ACCEPTED,
+                fees=fees,
+                amount=family_amount,
+                reconcilation_id=f"recon_{uuid4()}",
+                reconcilation_date=payment_date,
+            )
+            detail_payment.save(username=self._user.username)
+
+            if invoice.status != Invoice.Status.RECONCILIATED:
+                invoice.status = Invoice.Status.RECONCILIATED
+                invoice.date_payed = payment_invoice.date_payment
+                invoice.save(username=self._user.username)
+            self.log_invoice_event(
+                user=self._user,
+                invoice=invoice,
+                event_type=InvoiceEvent.EventType.PAYMENT,
+                message=f"Paiement reçu pour l'assuré {chf_id}, montant {amount_received} KMF pour la date du {payment_date.strftime('%d/%m/%Y')}"
+            )
+
+            premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice)
+            res = {
+                "invoice_code": invoice.code,
+                "payment_id": payment_invoice.id,
+                "detail_payment_id": detail_payment.id,
+                "premium_uuid": str(premium.uuid) if premium else None,
+                "status": "RECONCILIATED",
+                "amount": str(invoice.amount_total),
+            }
+            return_result.append(res)
+        return return_result
+
+
+    def calculate_due_date(self, today: py_date, payment_day: int) -> py_date:
+        """
+        Calcule la prochaine date d'échéance en tenant compte de la période.
         
-        premium = self.create_premium(chf_id, payment_invoice, code_tp, invoice)
-        return {
-            "invoice_code": invoice.code,
-            "payment_id": payment_invoice.id,
-            "detail_payment_id": detail_payment.id,
-            "premium_uuid": str(premium.uuid) if premium else None,
-            "status": "RECONCILIATED",
-            "amount": str(invoice.amount_total),
+        Args:
+            today: Date actuelle
+            payment_day: Jour de paiement souhaité (1-31)
+            period: Période en mois
+            (1=mensuel, 3=trimestriel, 6=semestriel, 12=annuel)
+        
+        Returns:
+            Prochaine date d'échéance
+        """
+        if payment_day < today.day:
+            # Mois suivant
+            if today.month == 12:
+                year = today.year + 1
+                month = 1
+            else:
+                year = today.year
+                month = today.month + 1
+        else:
+            # Mois courant
+            year = today.year
+            month = today.month
+
+        # Ajuster le jour si nécessaire
+        days_in_month = calendar.monthrange(year, month)[1]
+        day = min(payment_day, days_in_month)
+
+        return py_date(year, month, day)
+
+
+    def _generate_next_period_invoice(self, family, family_amount, government_amount, period_start, payment_day, period, payment_date):
+        """
+            Génère la facture "Cotisant" et "Etat" pour la prochaine période
+        """
+        period_start = (
+            period_start + timedelta(days=1) if period_start else datetime.now().date()
+        )
+        logger.info("current period_start: %s", period_start)
+        date_due = self.calculate_due_date(period_start, payment_day)
+        logger.info("date due : %s", date_due)
+        date_due = date_due.replace(day=payment_day)
+        logger.info("date due updated %s", date_due)
+        periodicity = 12
+        if period:
+            if period == 'Q':
+                periodicity = 3
+            elif period == 'S':
+                periodicity = 6
+            elif period == 'M':
+                periodicity = 1
+        date_to = date_due + datetimedelta(
+            months=periodicity
+        )
+        date_valid_to = date_to - timedelta(days=1)
+        logger.info("current date_valid_to %s", date_valid_to)
+        existing_invoices = []
+        if family.head_insuree:
+            existing_invoices = Invoice.objects.filter(
+                subject_id=family.head_insuree.id,
+                date_valid_from__date__gte=date_due,
+                is_deleted=False,
+                thirdparty_type=THIRDPARTY_TYPE_INSUREE, #filter only insuree invoices
+            ).filter(
+                Q(date_valid_to__isnull=True) |
+                Q(date_valid_to__date__gte=py_datetime.today().date())
+            ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
+        logger.info(
+            "existing invoices %s for third party type %s",
+            existing_invoices, THIRDPARTY_TYPE_INSUREE
+        )
+        if existing_invoices:
+            for inv in existing_invoices:
+                if inv.status == Invoice.Status.VALIDATED:
+                    return inv, inv.date_valid_to
+            next_date_due = existing_invoices.first().date_valid_to
+            if next_date_due and next_date_due > date_due:
+                return self._generate_next_period_invoice(
+                    family,
+                    family_amount,
+                    government_amount,
+                    existing_invoices.first().date_valid_to,
+                    payment_day,
+                    period,
+                    payment_date
+                )
+
+        base_code = f"{family.head_insuree.chf_id}_{date_due.strftime('%Y%m')}"
+        timestamp = py_datetime.now().strftime('%Y%m%d%H%M%S%f')
+        same_insuree_invoices = Invoice.objects.filter(
+            subject_id=family.head_insuree.id
+        )
+        code = f"{base_code}-F-{timestamp}"
+        if same_insuree_invoices:
+            code = f"{code}_{same_insuree_invoices.count() + 1}"
+
+        invoice_service = InvoiceService(user=self._user)
+        family_values = {
+            "code": code,
+            "date_due": date_due,
+            "date_valid_from": date_due,
+            "date_valid_to": date_valid_to,
+            "amount_net": family_amount,
+            "amount_total": family_amount,
+            "status": Invoice.Status.RECONCILIATED,
+            "cron_job_code": code,
+            "subject_id": family.head_insuree.id,
+            "subject_type": "insuree",
+            "thirdparty_id": family.head_insuree.id,
+            "thirdparty_type": "insuree",
+            "date_payed": payment_date
         }
+        logger.info("family_values %s", family_values)
+        result_invoice = invoice_service.create(family_values)
+        if not result_invoice.get("success"):
+            raise Exception(
+                f"Échec de création de la facture pour la période "
+                f"{date_due} - {date_valid_to}: "
+                f"{result_invoice}"
+            )
+        invoice_line_item_service = InvoiceLineItemService(user=self._user)
+        invoice_line_item_service.create(
+            {
+                "invoice_id": result_invoice["data"]["id"],
+                "code": code,
+                "ledger_account": "Cotisant",
+                "quantity": periodicity,
+                "unit_price": family_amount / periodicity,
+                "amount_net": family_amount,
+                "amount_total": family_amount,
+                "cron_job_code": code,
+            }
+        )
+        new_invoice = Invoice.objects.get(id=result_invoice["data"]["id"])
+        if government_amount > 0:
+            policy_holder = PolicyHolder.objects.filter(
+                is_deleted=False,
+                code="AFD"
+            ).filter(
+                Q(date_valid_to__isnull=True) |
+                Q(date_valid_to__date__gte=py_datetime.today().date())
+            ).first()
+            logger.info("policy holder found %s", policy_holder)
+            gov_code = f"{base_code}-G-{timestamp}"
+            if same_insuree_invoices:
+                gov_code = f"{gov_code}_{same_insuree_invoices.count() + 1}"
+            gov_values = {
+                "code": gov_code,
+                "date_due": date_due,
+                "date_valid_from": date_due,
+                "date_valid_to": date_valid_to,
+                "amount_net": government_amount,
+                "amount_total": government_amount,
+                "status": Invoice.Status.VALIDATED,
+                "cron_job_code": gov_code,
+                "subject_id": family.head_insuree.id,
+                "subject_type": "insuree",
+                "thirdparty_id": policy_holder.id,
+                "thirdparty_type": "policyholder",
+                "date_payed": payment_date
+            }
+            logger.info("gov_values %s ", gov_values)
+            result_invoice = invoice_service.create(
+                gov_values
+            )
+            logger.info("Invoice government amount created %s", result_invoice)
+            item_values = {
+                "invoice_id": result_invoice["data"]["id"],
+                "code": gov_code,
+                "ledger_account": "Etat",
+                "quantity": periodicity,
+                "unit_price": government_amount / periodicity,
+                "amount_net": government_amount,
+                "amount_total": government_amount,
+                "cron_job_code": gov_code
+            }
+            result = invoice_line_item_service.create(
+                item_values
+            )
+            logger.info("Invoice line gov_amount created %s", result)
+        return new_invoice, date_valid_to
 
     def create_premium(self, chf_id, data, code_tp, invoice):
         try:
@@ -937,7 +1250,7 @@ class BankImportService:
                 family=family, validity_to__isnull=True
             ).exclude(
                 status__in=[Policy.STATUS_SUSPENDED, Policy.STATUS_READY]
-            ).order_by("start_date").first()
+            ).order_by("-start_date").first()
 
             if policy:
                 # Si la police n'est pas encore expirée, on la mets a jour (expiry date) et
@@ -945,7 +1258,7 @@ class BankImportService:
                 if policy.status == Policy.STATUS_IDLE:
                     premium_data = {
                         "audit_user_id": self._user.id,
-                        "receipt": data.code_receipt,
+                        "receipt": f"receipt_{uuid4()}",
                         "pay_date": data.date_payment,
                         "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
                         "is_photo_fee": False,
@@ -1008,16 +1321,15 @@ class BankImportService:
                     logger.info(f"Nouvelle police renouvelée {new_policy.id} créée avec start_date={invoice.date_valid_from.date()}")
 
                     policy.stage = Policy.STAGE_RENEWED
-                    policy.validity_to = timezone.now()
                     policy.save()
                     logger.info(f"Ancienne police {policy.id} marquée comme renouvelée")
 
                     update_insuree_policies(new_policy, self._user.id)
                     premium_data = {
                         "audit_user_id": self._user.id,
-                        "receipt": data.code_receipt,
+                        "receipt": f"receipt_{uuid4()}",
                         "pay_date": data.date_payment,
-                        "pay_type": "B",
+                        "pay_type": "B" if code_tp in ["BDC", "EXIM", "Banque"] else "M",
                         "is_photo_fee": False,
                         "amount": data.amount_received,
                         "policy": new_policy
@@ -1035,9 +1347,15 @@ class BankImportService:
                         # afin de ne pas manquer une période non payée
                         logger.info("La police est quand meme expirée")
                         new_policy.status = Policy.STATUS_EXPIRED
+                    if policy.effective_date:
+                        logger.info(
+                            "La nouvelle police prend l'ancienne date d'efet %s",
+                            policy.effective_date
+                        )
+                        new_policy.effective_date = policy.effective_date
                     new_policy.save()
             else:
                 logger.warning(f"Aucune police active trouvée pour la famille {family.id}")
         except Exception as e:
             logger.exception(f"Erreur lors de la création de contribution pour le numéro d'assuré {chf_id}: {e}")
-    
+
