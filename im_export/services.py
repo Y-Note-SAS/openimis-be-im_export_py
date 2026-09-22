@@ -1034,6 +1034,8 @@ class BankImportService:
         for _ in range(nombre_facture):
             invoice = self.find_invoice(chf_id)
             logger.info("Invoice found %s", invoice)
+            if invoice:
+                cursor_period_end = invoice.date_valid_to
             if not invoice:
                 # Plus de facture impayée -> génération d'une nouvelle période
                 invoice, cursor_period_end = self._generate_next_period_invoice(
