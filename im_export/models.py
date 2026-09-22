@@ -14,4 +14,3 @@ class BankImport(models.Model):
 
     class Meta:
         db_table = "tblBankImport"
-    
