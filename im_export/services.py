@@ -1125,9 +1125,6 @@ class BankImportService:
                 date_valid_from__date__gte=date_due,
                 is_deleted=False,
                 thirdparty_type=THIRDPARTY_TYPE_INSUREE, #filter only insuree invoices
-            ).filter(
-                Q(date_valid_to__isnull=True) |
-                Q(date_valid_to__date__gte=py_datetime.today().date())
             ).exclude(status=Invoice.Status.CANCELLED).order_by("date_valid_from")
         logger.info(
             "existing invoices %s for third party type %s",
