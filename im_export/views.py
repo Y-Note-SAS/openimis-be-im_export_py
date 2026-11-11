@@ -42,7 +42,7 @@ def import_insurees(request):
 @permission_classes([check_user_rights(InsureeConfig.gql_query_insurees_perms, )])
 def export_insurees(request):
     try:
-        # TODO add location based filtering
+        # the insurees the user may see only (InsureeResource.export: Insuree.get_queryset)
         export_format = request.GET.get("file_format", "csv")
         user = request.user
 

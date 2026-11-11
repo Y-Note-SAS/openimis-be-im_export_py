@@ -64,14 +64,15 @@ class InsureeImportExportService:
         except Exception as e:
             return self._get_general_error('file validation failed', e)
 
-        dry_run_result = self._resource.import_data(data_set, dry_run=True)  # Test the data import
+        # in a rolled back transaction: the heads and their families exist for the members' rows
+        dry_run_result = self._resource.import_data(data_set, dry_run=True, use_transactions=True)
         totals = self._get_totals_from_result(dry_run_result)
         errors = self._get_errors_from_result(dry_run_result)
         success = not dry_run_result.has_errors() and not dry_run_result.has_validation_errors()
 
         if not dry_run:
             if success:
-                self._resource.import_data(data_set, dry_run=False)  # Actually import
+                self._resource.import_data(data_set, dry_run=False, use_transactions=True)  # Actually import
                 logger.info(f'Imported {totals["sent"]} insurees')
             else:
                 logger.info(f'Failed to import {totals["sent"]} insurees, details: {totals}, errors: {errors}')

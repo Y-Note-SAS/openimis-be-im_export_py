@@ -2,7 +2,9 @@ from django.db.models import Q
 
 from core.datetimes.ad_datetime import datetime
 from im_export.apps import ImportExportConfig
+from insuree.apps import InsureeConfig
 from insuree.models import Insuree, Family, Gender
+from insuree.uba import has_enrolment_perms
 from location.models import Location
 
 from import_export import fields, resources, widgets
@@ -213,12 +215,24 @@ class InsureeResource(resources.ModelResource):
         validate_and_preprocess(dataset)
         return dataset.sort('head', reverse=True)
 
-    def after_import_instance(self, instance, new, **kwargs):
+    # django-import-export 4.x calls after_init_instance / import_instance; the former
+    # after_import_instance / import_obj overrides were never called (the head flag,
+    # village and card_issued were not set and every row failed)
+    def after_init_instance(self, instance, new, row, **kwargs):
         # for now editing is disabled
         if not new:
             raise ValueError("Insuree number already exists")
 
-    def import_obj(self, instance, row, dry_run, **kwargs):
+    def _check_village(self, village, label):
+        """The insuree create right on `village`: inside the user's districts, globally
+        or with the ENROLMENT UBA link on it (insuree.uba)."""
+        if village is None or not has_enrolment_perms(
+                self._user, InsureeConfig.gql_mutation_create_insurees_perms, [village]):
+            raise ValueError(f"Not allowed to enrol insurees in village {label}")
+
+    def import_instance(self, instance, row, **kwargs):
+        village = Location.objects.filter(id=row['village_id'], validity_to__isnull=True).first()
+        self._check_village(village, row.get('village'))
         instance.head = row['head']
         instance.current_village_id = row['village_id']
 
@@ -227,23 +241,30 @@ class InsureeResource(resources.ModelResource):
             instance.audit_user_id = self._user.i_user.id
 
         if not instance.head:
-            family = Family.objects.all().filter(validity_to__isnull=True) \
-                .select_related('location') \
-                .get(head_insuree__chf_id=row['head_insuree_number'])
+            # the family is looked up among the ones the user may see, and joining it is a
+            # write on its village (it was any family, by its head's number)
+            family = Family.get_queryset(
+                Family.objects.filter(validity_to__isnull=True, head_insuree__chf_id=row['head_insuree_number']),
+                self._user).select_related('location').first()
+            if family is None:
+                raise ValueError(f"Family of head insuree {row['head_insuree_number']} not found")
+            self._check_village(family.location, row['head_insuree_number'])
             instance.family = family
             family_location = family.location
             # if the current village is the same as head's, skip the current_location
-            if family_location.id == row['village_id']:
+            if family_location and family_location.id == row['village_id']:
                 instance.current_village_id = None
 
         # important to be at the end
-        super().import_obj(instance, row, dry_run, **kwargs)
+        super().import_instance(instance, row, **kwargs)
 
-    def after_save_instance(self, instance, using_transactions, dry_run):
-        super().after_save_instance(instance, using_transactions, dry_run)
+    # django-import-export 4.x: after_save_instance(instance, row, **kwargs)
+    def after_save_instance(self, instance, row, **kwargs):
+        super().after_save_instance(instance, row, **kwargs)
         if instance.head:
-            # if not using_transactions and dry_run this code will cause changes in database on dry run
-            if using_transactions or not dry_run:
+            # without transactions a dry run must not write; with them (rolled back) the
+            # family is created so that the members' rows find it (the test was inverted)
+            if kwargs.get('using_transactions', False) or not kwargs.get('dry_run', False):
                 instance.family = self.create_family(instance)
                 instance.current_village = None
                 instance.save()
@@ -257,8 +278,17 @@ class InsureeResource(resources.ModelResource):
             'is_offline': False,
         })
 
+    def export(self, queryset=None, **kwargs):
+        """The current insurees the user may see (Insuree.get_queryset: districts, UBA),
+        not every insuree of the country."""
+        if queryset is None:
+            queryset = Insuree.get_queryset(self.get_queryset(), self._user)
+        return super().export(queryset=queryset, **kwargs)
+
     def get_queryset(self):
-        queryset = self._queryset if self._queryset else super().get_queryset()
+        # unscoped on purpose: the import looks existing insurees up here (an insuree
+        # out of the user's scope must still count as existing); export() scopes it
+        queryset = self._queryset if self._queryset is not None else super().get_queryset()
         return queryset \
             .filter(validity_to__isnull=True) \
             .select_related('gender', 'current_village', 'family', 'family__location', 'family__location__parent',
